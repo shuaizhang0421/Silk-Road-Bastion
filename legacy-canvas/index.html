@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#163942">
+  <title>丝路堡垒</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main id="game" class="game-shell">
+    <section id="startScreen" class="start-screen">
+      <div class="start-art" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="start-copy">
+        <p class="eyebrow">单机守城发育</p>
+        <h1>丝路堡垒</h1>
+        <p class="intro">收集资源，升级城墙和弩塔，守住一波比一波强的敌人。</p>
+        <div class="quick-rules">
+          <span><b>1</b> 点资源</span>
+          <span><b>2</b> 造防御</span>
+          <span><b>3</b> 开始迎敌</span>
+        </div>
+        <div class="mode-choices" role="group" aria-label="选择模式">
+          <button class="mode-choice active" data-mode="expedition" type="button"><strong>无尽远征</strong><span>每个纪元更换随机地图</span></button>
+          <button class="mode-choice" data-mode="survival" type="button"><strong>原地守城</strong><span>不迁营，一直升级同一座城</span></button>
+        </div>
+        <details class="start-options">
+          <summary>局面设置</summary>
+          <label class="seed-field">世界种子<input id="seedInput" maxlength="20" placeholder="留空则每局随机"></label>
+        </details>
+        <button id="startGame" class="primary-action" type="button">开始远征</button>
+        <div id="records" class="records"></div>
+      </div>
+    </section>
+
+    <section id="playScreen" class="play-screen hidden" aria-live="polite">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">S</span><div><strong>丝路堡垒</strong><small id="regionName">绿洲商路</small></div></div>
+        <div class="run-data"><span id="modeText"></span><span class="seed-meta">种子 <b id="seedText"></b></span></div>
+        <button id="helpBtn" class="quiet-btn" type="button">怎么玩</button>
+        <button id="endRun" class="quiet-btn" type="button">结束并结算</button>
+      </header>
+
+      <section class="status-strip">
+        <div class="phase-block"><span id="phaseLabel">发展期</span><strong id="epochLabel">第 1 纪元</strong></div>
+        <div class="resource-block" aria-label="资源">
+          <span title="木材">木 <b id="wood">0</b></span><span title="石料">石 <b id="stone">0</b></span><span title="晶矿">晶 <b id="crystal">0</b></span><span title="钱币">币 <b id="coin">0</b></span>
+        </div>
+        <div class="core-block"><span>城门耐久</span><strong id="coreHp">100 / 100</strong></div>
+        <div class="threat-block"><span>敌军威胁</span><strong id="threatValue">1</strong></div>
+      </section>
+
+      <section class="game-layout">
+        <div id="goalBar" class="goal-bar"><b>现在要做：</b><span id="goalText">先点击地图上的资源点。</span><small id="actionLabel">还可行动 6 次</small></div>
+        <section class="board-wrap">
+          <canvas id="board" width="900" height="630" aria-label="游戏地图。发展期点击资源点采集，选择建筑后点击空地建造。"></canvas>
+          <div id="boardHint" class="board-hint">点击地图移动。走到资源旁会自动采集。</div>
+          <div class="battle-peek"><span>敌情</span><div id="enemyInfo" class="enemy-info">本纪元威胁 1</div></div>
+          <div id="eventCard" class="event-card hidden"></div>
+        </section>
+
+        <section class="build-dock">
+          <div class="dock-heading"><div><h2>建造与升级</h2><p>选中建筑，再点地图空地。</p></div><button id="advanceBtn" class="primary-action battle-btn" type="button">开始迎敌</button></div>
+          <div id="buildList" class="build-list"></div>
+        </section>
+
+        <details class="secondary-info">
+          <summary>查看本局强化和战斗记录</summary>
+          <div class="secondary-grid">
+            <div><h2>本局强化</h2><div id="modifierList" class="modifier-list"><span>尚未获得强化</span></div></div>
+            <div><h2>最近发生</h2><div id="log" class="log"></div></div>
+          </div>
+        </details>
+      </section>
+    </section>
+
+    <div id="choiceModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-card"><p id="modalEyebrow" class="eyebrow"></p><h2 id="modalTitle"></h2><p id="modalText"></p><div id="modalChoices" class="modal-choices"></div></div>
+    </div>
+
+    <div id="helpModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="helpTitle">
+      <div class="modal-card help-card">
+        <p class="eyebrow">三步就能开始</p>
+        <h2 id="helpTitle">怎么玩</h2>
+        <div class="help-steps">
+          <article><b>1</b><div><strong>移动与收集</strong><span>点击地图让角色移动。走到写着“木、石、晶、币”的资源处会自动采集。</span></div></article>
+          <article><b>2</b><div><strong>建造</strong><span>先造机关弩塔攻击敌人，再造外墙提升城门耐久。</span></div></article>
+          <article><b>3</b><div><strong>发育与迎敌</strong><span>钱币会持续增长，驿市能提高收益。点“开始迎敌”后防御会自动战斗。</span></div></article>
+        </div>
+        <button id="closeHelp" class="primary-action" type="button">知道了，开始发育</button>
+      </div>
+    </div>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

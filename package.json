@@ -1,0 +1,23 @@
+{
+  "name": "silk-road-bastion-3d",
+  "private": true,
+  "version": "3.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test:sim": "tsx scripts/simulate.ts"
+  },
+  "dependencies": {
+    "@phosphor-icons/web": "^2.1.2",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@types/three": "^0.180.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

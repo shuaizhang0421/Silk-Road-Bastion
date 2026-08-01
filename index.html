@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#182f32" />
+    <meta name="description" content="丝路堡垒，真 3D 单机无尽守城游戏。" />
+    <title>丝路堡垒</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="gameCanvas" aria-label="丝路堡垒 3D 游戏场景"></canvas>
+
+      <section id="loading" class="loading-screen" aria-live="polite">
+        <div class="loading-mark"><span></span><span></span><span></span></div>
+        <h1>丝路堡垒</h1>
+        <p id="loadingStatus">正在铺设驿站</p>
+        <div class="loading-track"><i id="loadingProgress"></i></div>
+      </section>
+
+      <section id="startScreen" class="start-screen is-hidden">
+        <div class="title-lockup">
+          <p>单机无尽守城</p>
+          <h1>丝路堡垒</h1>
+          <span>筑驿站，守商路，或踏上行者历练</span>
+        </div>
+        <div class="menu-deck">
+          <div class="deck-heading"><span id="modeKicker">守商路，逐夜扩建</span><small id="modeDescription">从一座小驿站出发，每 3 夜开辟新的防线。</small></div>
+        <div class="start-actions">
+          <button id="newGameBtn" class="start-primary" type="button">
+            <i class="ph ph-compass"></i><span>新建随机世界</span>
+          </button>
+          <button id="continueBtn" class="start-secondary is-hidden" type="button">
+            <i class="ph ph-arrow-clockwise"></i><span>继续本局</span>
+          </button>
+          <div class="mode-switch" role="group" aria-label="游戏模式">
+            <button class="mode-btn is-active" data-mode="expedition" type="button"><i class="ph ph-map-trifold" aria-hidden="true"></i><span><b>无尽远征</b><small>每 3 夜迁营并扩建驿站</small></span></button>
+            <button class="mode-btn" data-mode="survival" type="button"><i class="ph ph-castle-turret" aria-hidden="true"></i><span><b>极限守城</b><small>固定城池，敌军战术高压</small></span></button>
+            <button class="mode-btn mode-btn--coming" type="button" disabled aria-label="行者历练，后续开放"><i class="ph ph-sword" aria-hidden="true"></i><span><b>行者历练</b><small>后续开放</small></span></button>
+          </div>
+          <div id="saveSlots" class="save-slots" aria-label="本地存档位"></div>
+          <div class="save-actions"><button id="exportSaveBtn" type="button"><i class="ph ph-export"></i>导出存档</button><label for="importSaveInput"><i class="ph ph-upload-simple"></i>导入存档</label><input id="importSaveInput" type="file" accept="application/json"></div>
+        </div>
+        </div>
+        <div class="records" id="records"></div>
+      </section>
+
+      <section id="hud" class="hud is-hidden" aria-live="polite">
+        <div class="player-hud">
+          <div class="portrait"><i class="ph ph-person-simple-run"></i></div>
+          <div class="vitals">
+            <strong>丝路行者</strong>
+            <div class="meter hp"><i id="playerHpFill"></i></div>
+          </div>
+          <button id="skillBtn" class="skill-button" title="使用战技" type="button">
+            <i class="ph ph-sword"></i>
+            <small>战技</small>
+          </button>
+        </div>
+
+        <div class="phase-hud">
+          <span id="regionLabel">绿洲商路</span>
+          <strong id="phaseLabel">发展备战</strong>
+          <em id="objectiveLabel">天亮条件：击退本夜全部敌军</em>
+          <div class="day-track"><i id="dayProgress"></i></div>
+          <small><b id="epochLabel">第 1 夜</b><span id="timeLabel">准备 00:20</span></small>
+          <mark id="nightModifier" class="night-modifier is-hidden"><i class="ph ph-wind"></i><span>沙暴夜</span></mark>
+        </div>
+
+        <div class="resource-hud">
+          <span title="钱币"><i class="resource-token coin-token" aria-hidden="true"></i><b id="coinValue">0</b><small id="coinRate">+1</small></span>
+          <span title="木材"><i class="resource-token wood-token" aria-hidden="true"></i><b id="woodValue">0</b><small id="woodRate">+0</small></span>
+          <span title="石料"><i class="resource-token stone-token" aria-hidden="true"></i><b id="stoneValue">0</b><small id="stoneRate">+0</small></span>
+          <span title="机巧"><i class="resource-token gear-token" aria-hidden="true"></i><b id="gearValue">0</b><small id="gearRate">+0</small></span>
+        </div>
+
+        <div id="gateWorldBar" class="world-bar gate-bar">
+          <span><i class="ph ph-door"></i><b id="gateLevelLabel">城门 Lv.1</b><small id="gateHpText">260/260</small></span>
+          <div><i id="gateHpFill"></i></div>
+          <button id="gateUpgradeBtn" type="button" title="升级城门">
+            <i class="ph ph-arrow-fat-up"></i><small id="gateUpgradeCost">18</small>
+          </button>
+        </div>
+
+        <div id="coreWorldBar" class="world-bar core-bar">
+          <span><i class="ph ph-house-line"></i><b>驿站主帐</b><small id="coreHpText">180/180</small></span>
+          <div><i id="coreHpFill"></i></div>
+        </div>
+
+        <div id="contextMenu" class="context-menu is-hidden">
+          <strong id="contextName">机关弩塔</strong>
+          <span id="contextLevel">等级 1</span>
+          <em id="contextEffect">远程攻击</em>
+          <button id="upgradeBtn" type="button" title="升级">
+            <i class="ph ph-arrow-fat-up"></i><small id="upgradeCost">20</small>
+          </button>
+          <button id="repairBtn" type="button" title="修理">
+            <i class="ph ph-hammer"></i><small id="repairCost">修理</small>
+          </button>
+          <button id="workshopModeBtn" class="is-hidden" type="button" title="切换工坊专精">
+            <i class="ph ph-arrows-clockwise"></i><small id="workshopModeText">轮换</small>
+          </button>
+          <button id="demolishBtn" type="button" title="拆除并返还部分材料">
+            <i class="ph ph-trash"></i><small id="demolishRefund">返还</small>
+          </button>
+        </div>
+
+        <div id="prompt" class="prompt">
+          <i id="promptIcon" class="ph ph-map-pin"></i>
+          <span id="promptText">先建商栈获得稳定钱币，再布置弩塔</span>
+        </div>
+
+        <div id="enemyArrow" class="enemy-arrow is-hidden">
+          <i class="ph ph-caret-double-up"></i>
+          <span id="enemyCount">敌袭</span>
+        </div>
+
+        <div id="fieldObjective" class="field-objective is-hidden">
+          <i class="ph ph-compass"></i>
+          <span id="fieldObjectiveText">城外事件</span>
+        </div>
+
+        <div class="top-actions">
+          <button id="soundBtn" title="声音" type="button"><i class="ph ph-speaker-high"></i></button>
+          <button id="pauseBtn" title="暂停" type="button"><i class="ph ph-pause"></i></button>
+          <button id="speedBtn" class="is-hidden" title="夜袭速度" type="button"><b>1x</b></button>
+          <button id="endDayBtn" title="提前入夜" type="button"><i class="ph ph-moon-stars"></i></button>
+        </div>
+        <section id="audioPanel" class="audio-panel is-hidden" aria-label="声音设置">
+          <label>音乐 <input id="musicVolume" type="range" min="0" max="100" value="72"></label>
+          <label>音效 <input id="effectsVolume" type="range" min="0" max="100" value="82"></label>
+          <button id="muteAudioBtn" type="button"><i class="ph ph-speaker-high"></i>静音</button>
+        </section>
+
+        <div id="hotbar" class="hotbar" aria-label="建造快捷栏"></div>
+        <div id="buildingLabels" class="building-labels"></div>
+        <div id="choiceLabels" class="choice-labels"></div>
+
+        <div id="waveClear" class="wave-clear is-hidden">
+          <i class="ph ph-sun-horizon"></i>
+          <strong id="clearTitle">守夜成功</strong>
+          <span id="clearSubtitle">第 1 夜完成</span>
+        </div>
+
+        <button id="mobileAction" class="mobile-action" type="button" aria-label="交互">
+          <i class="ph ph-hand-tap"></i>
+        </button>
+
+        <section id="adventureHud" class="adventure-hud is-hidden" aria-live="polite">
+          <div><span id="adventureHero">盾刀守卫</span><b id="adventureLevel">Lv.1</b></div>
+          <p id="adventureObjective">清除前方营地</p>
+          <small id="adventureGear">空手上路</small>
+          <button id="adventureSkillBtn" type="button"><i class="ph ph-lightning"></i>战技</button>
+        </section>
+        <section id="adventureChoices" class="adventure-choices is-hidden" aria-live="polite">
+          <p>战利品抉择</p><div id="adventureChoiceList"></div>
+        </section>
+      </section>
+
+      <section id="pauseOverlay" class="pause-overlay is-hidden">
+        <h2>远征暂停</h2>
+        <p id="worldSeed" class="world-seed">本局世界编号</p>
+        <button id="resumeBtn" type="button">继续</button>
+        <button id="returnTitleBtn" type="button">保存并返回</button>
+        <button id="replayTutorialBtn" type="button">重看新手引导</button>
+      </section>
+
+      <section id="gameOver" class="game-over is-hidden">
+        <p>驿站失守</p>
+        <h2 id="resultEpoch">守至第 1 夜</h2>
+        <div id="resultStats"></div>
+        <button id="restartBtn" type="button">再次远征</button>
+        <button id="titleBtn" type="button">返回标题</button>
+      </section>
+
+      <section id="fatalError" class="fatal-error is-hidden">
+        <i class="ph ph-warning-octagon"></i>
+        <h2>无法进入驿站</h2>
+        <p id="fatalText">当前浏览器无法启动 3D 场景。</p>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
