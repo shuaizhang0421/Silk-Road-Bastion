@@ -6,6 +6,9 @@ let maxWave = 0;
 let mechanicEpoch = 0;
 let totalEarlyEnemies = 0;
 let totalLateEnemies = 0;
+let survivalEpochs = 0;
+let expeditionEnemyTotal = 0;
+let survivalEnemyTotal = 0;
 
 const repeatA = createGame("expedition", "REPEATABLE-WORLD", emptyMeta());
 const repeatB = createGame("expedition", "REPEATABLE-WORLD", emptyMeta());
@@ -63,6 +66,8 @@ if (enemyHealthScale(15, "survival") <= enemyHealthScale(15, "expedition")) thro
 for (const seed of seeds) {
   const state = createGame("expedition", seed, emptyMeta());
   const streams = new SeedStreams(state.rng);
+  const survivalState = createGame("survival", `${seed}-SURVIVAL`, emptyMeta());
+  const survivalStreams = new SeedStreams(survivalState.rng);
   for (let epoch = 1; epoch <= 50; epoch += 1) {
     state.epoch = epoch;
     const wave = directorWave(
@@ -85,13 +90,34 @@ for (const seed of seeds) {
     if (wave.some((type) => type !== "raider") && mechanicEpoch === 0) mechanicEpoch = epoch;
     if (epoch <= 3) totalEarlyEnemies += wave.length;
     if (epoch >= 26) totalLateEnemies += wave.length;
+    expeditionEnemyTotal += wave.length;
     generatedEpochs += 1;
+
+    const survivalWave = directorWave(
+      {
+        epoch,
+        prosperity: Math.floor(epoch * 1.08),
+        gateLevel: 1 + Math.floor(epoch / 5),
+        defensePower: 18 + epoch * 4,
+        recentDamage: epoch % 2 === 0 ? 105 : 35,
+        mode: "survival"
+      },
+      regionById(survivalState.regionId),
+      survivalStreams
+    );
+    if (!survivalWave.length || survivalWave.length > 60) throw new Error(`${seed} 的极限第 ${epoch} 夜波次无效`);
+    if (epoch >= 4 && !survivalWave.includes("archer")) throw new Error(`${seed} 的极限第 ${epoch} 夜缺少游弓手`);
+    if ((epoch % 5 === 0) !== Boolean(bossForNight(epoch, regionById(survivalState.regionId)))) throw new Error(`${seed} 的极限首领轮换错误`);
+    survivalEnemyTotal += survivalWave.length;
+    survivalEpochs += 1;
   }
 }
 
 if (generatedEpochs !== 5000) throw new Error(`纪元数量错误: ${generatedEpochs}`);
+if (survivalEpochs !== 5000) throw new Error(`极限纪元数量错误: ${survivalEpochs}`);
 if (mechanicEpoch > 3) throw new Error("敌军机制解锁过晚");
 if (totalLateEnemies <= totalEarlyEnemies) throw new Error("后期敌军组合没有形成进程性");
+if (survivalEnemyTotal <= expeditionEnemyTotal * 1.04) throw new Error("极限守城的总体敌军压力与无尽远征差异不足");
 
 const gateLevelTenMax = 260 + Array.from({ length: 9 }, (_, index) => 72 + Math.min(150, (index + 2) * 14)).reduce((sum, value) => sum + value, 0);
 const pressureWave = directorWave({ epoch: 20, prosperity: 28, gateLevel: 10, defensePower: 150, recentDamage: 20, mode: "expedition" }, regionById("canyon"), new SeedStreams(createGame("expedition", "GATE-PRESSURE", emptyMeta()).rng));
@@ -99,4 +125,4 @@ const nightTwentyScale = 1 + 0.052 * 19 + 0.0045 * Math.pow(19, 1.35);
 const threeAttackDamage = pressureWave.reduce((sum, type) => sum + enemies[type].damage * nightTwentyScale * (type === "sapper" ? 1.55 : type === "archer" ? 0.78 : 1), 0) * 3;
 if (threeAttackDamage <= gateLevelTenMax) throw new Error("十级城门仍可在高夜无视整波敌军，防守压力不足");
 
-console.log(`模拟通过：100 个种子、${generatedEpochs} 个纪元，${relics.length} 项奖励，${openingRegions.size} 种首区域、${openingTerrains.size} 种地貌变体，最大波次 ${maxWave}，机制敌人自第 ${mechanicEpoch} 纪元出现。`);
+console.log(`模拟通过：100 个世界、无尽与极限各 ${generatedEpochs} 夜（合计 ${generatedEpochs + survivalEpochs} 夜），${relics.length} 项奖励，${openingRegions.size} 种首区域、${openingTerrains.size} 种地貌变体，最大波次 ${maxWave}，极限敌军量高出 ${Math.round((survivalEnemyTotal / expeditionEnemyTotal - 1) * 100)}%。`);

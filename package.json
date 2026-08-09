@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1",
     "test:sim": "tsx scripts/simulate.ts",
     "test:save": "tsx scripts/test-save-migration.ts",
+    "test:ui": "node scripts/test-ui-contract.mjs",
     "test:assets": "node scripts/audit-assets.mjs"
   },
   "dependencies": {

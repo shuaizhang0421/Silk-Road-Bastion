@@ -25,6 +25,7 @@
 - 风声环境音、生产提示、建造、弩箭、撞门、警报和胜利音效
 - 手机竖屏、横屏和平板 HUD，全屏点击移动、拖动走位、双指缩放
 - GitHub Pages 相对路径构建
+- 自动检查无尽与极限各 5000 夜、存档字段范围、资产授权和多端 HUD 资源图标契约
 - 首页提供 GitHub 试玩反馈入口，不接入账号、广告或行为追踪
 
 ## 本地运行
@@ -43,6 +44,8 @@ pnpm build
 ```
 
 静态文件输出至 `dist/`，可直接发布到 GitHub Pages。
+
+完整本地验收可依次运行 `pnpm test:assets`、`pnpm test:save`、`pnpm test:ui`、`pnpm test:sim` 和 `pnpm build`。
 
 ## 控制
 

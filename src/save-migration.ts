@@ -1,6 +1,43 @@
 import { ASSET_VERSION, emptyMeta } from "./data";
 import type { GameState, SaveEnvelope } from "./types";
 
+const modes = ["expedition", "survival", "training"] as const;
+const phases = ["day", "night", "clear", "relic", "route", "adventure", "adventure-choice", "gameover"] as const;
+const resourceKeys = ["coin", "wood", "stone", "gear"] as const;
+
+/** Strict boundary check used before an imported or migrated file can replace a valid local slot. */
+export function isSafeSaveEnvelope(value: unknown): value is SaveEnvelope {
+  if (!value || typeof value !== "object") return false;
+  const envelope = value as Record<string, any>;
+  if (envelope.schema !== "silk-road-bastion" || envelope.version !== 7 || !envelope.meta || typeof envelope.meta !== "object") return false;
+  const meta = envelope.meta;
+  const recordNumbers = [
+    meta.renown,
+    ...Object.values(meta.records ?? {}),
+    ...Object.values(meta.prosperityRecords ?? {}),
+    ...Object.values(meta.bossRecords ?? {}),
+    ...Object.values(meta.eventRecords ?? {})
+  ];
+  if (meta.version !== 7 || typeof meta.seenTutorial !== "boolean" || !recordNumbers.every((entry) => typeof entry === "number" && Number.isFinite(entry) && entry >= 0 && entry <= 1_000_000_000)) return false;
+  if (!modes.every((mode) => Number.isFinite(meta.records?.[mode])) || !Array.isArray(meta.unlockedRegions) || !meta.unlockedRegions.every((region: unknown) => typeof region === "string")) return false;
+  if (envelope.run === null) return true;
+
+  const run = envelope.run;
+  if (!run || run.version !== 7 || !modes.includes(run.mode) || typeof run.seed !== "string" || run.seed.length > 160 || !phases.includes(run.phase)) return false;
+  if (!Number.isFinite(run.epoch) || run.epoch < 1 || run.epoch > 100_000 || !Number.isFinite(run.dayLength) || run.dayLength < 1 || run.dayLength > 600) return false;
+  for (const [hp, maxHp] of [[run.gateHp, run.gateMaxHp], [run.coreHp, run.coreMaxHp], [run.player?.hp, run.player?.maxHp]]) {
+    if (!Number.isFinite(hp) || !Number.isFinite(maxHp) || hp < 0 || maxHp <= 0 || hp > maxHp * 1.01) return false;
+  }
+  if (!run.resources || !resourceKeys.every((key) => Number.isFinite(run.resources[key]) && run.resources[key] >= 0 && run.resources[key] <= 1_000_000_000)) return false;
+  if (!Number.isFinite(run.player?.position?.x) || !Number.isFinite(run.player?.position?.z)) return false;
+  if (!["auto", "low", "medium", "high"].includes(run.qualityTier) || typeof run.assetVersion !== "string" || run.assetVersion.length > 80) return false;
+  if (!Number.isFinite(run.bossKills) || run.bossKills < 0 || !Number.isFinite(run.eventsCompleted) || run.eventsCompleted < 0) return false;
+  return Array.isArray(run.buildings) && run.buildings.length <= 32
+    && Array.isArray(run.enemies) && run.enemies.length <= 100
+    && Array.isArray(run.relics) && run.relics.length <= 500
+    && Array.isArray(run.fortifications) && run.fortifications.length <= 12;
+}
+
 /** Pure v6 to v7 migration used by both the browser runtime and CI. */
 export function migrateSaveEnvelope(value: unknown): SaveEnvelope | null {
   if (!value || typeof value !== "object") return null;

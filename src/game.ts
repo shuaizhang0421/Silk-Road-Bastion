@@ -32,7 +32,7 @@ import {
   makeResource,
   type CharacterRig
 } from "./models";
-import { migrateSaveEnvelope } from "./save-migration";
+import { isSafeSaveEnvelope, migrateSaveEnvelope } from "./save-migration";
 import type {
   BuildingState,
   BuildingType,
@@ -5311,53 +5311,9 @@ function makeWindWornMound(
     }
   }
 
-  /** 导入档案只做必要字段校验：既防止损坏 JSON 进入运行时，也不把未来版本的扩展字段误删。 */
-  private isValidSaveRun(value: unknown): value is GameState {
-    if (!value || typeof value !== "object") return false;
-    const run = value as Partial<GameState>;
-    if (run.version !== 7 || !["expedition", "survival", "training"].includes(run.mode ?? "") || typeof run.seed !== "string") return false;
-    const requiredNumbers = [run.epoch, run.phaseTime, run.dayLength, run.gateHp, run.gateMaxHp, run.coreHp, run.coreMaxHp];
-    if (!requiredNumbers.every((entry) => typeof entry === "number" && Number.isFinite(entry))) return false;
-    if ((run.epoch ?? 0) < 1 || (run.epoch ?? 0) > 100_000 || (run.dayLength ?? 0) < 1 || (run.dayLength ?? 0) > 600) return false;
-    if ((run.gateHp ?? -1) < 0 || (run.gateMaxHp ?? 0) <= 0 || (run.gateHp ?? 0) > (run.gateMaxHp ?? 0) * 1.01) return false;
-    if ((run.coreHp ?? -1) < 0 || (run.coreMaxHp ?? 0) <= 0 || (run.coreHp ?? 0) > (run.coreMaxHp ?? 0) * 1.01) return false;
-    if (typeof run.regionId !== "string" || !["day", "night", "clear", "relic", "route", "adventure", "adventure-choice", "gameover"].includes(run.phase ?? "")) return false;
-    const resources = run.resources as Partial<Resources> | undefined;
-    if (!resources || !(["coin", "wood", "stone", "gear"] as const).every((key) => typeof resources[key] === "number" && Number.isFinite(resources[key]!) && resources[key]! >= 0 && resources[key]! <= 1_000_000_000)) return false;
-    const player = run.player;
-    if (!player || !Number.isFinite(player.hp) || !Number.isFinite(player.maxHp) || !Number.isFinite(player.position?.x) || !Number.isFinite(player.position?.z)) return false;
-    if (!(["auto", "low", "medium", "high"] as const).includes(run.qualityTier ?? "auto")) return false;
-    if (!Number.isFinite(run.bossKills) || !Number.isFinite(run.eventsCompleted) || (run.bossKills ?? -1) < 0 || (run.eventsCompleted ?? -1) < 0) return false;
-    if (typeof run.assetVersion !== "string" || run.assetVersion.length > 80) return false;
-    return Array.isArray(run.buildings) && run.buildings.length <= 32
-      && Array.isArray(run.enemies) && run.enemies.length <= 100
-      && Array.isArray(run.relics) && run.relics.length <= 500
-      && Array.isArray(run.fortifications) && run.fortifications.length <= 12;
-  }
-
-  private isValidSaveEnvelope(value: unknown): value is SaveEnvelope {
-    if (!value || typeof value !== "object") return false;
-    const envelope = value as Partial<SaveEnvelope>;
-    if (envelope.schema !== "silk-road-bastion" || envelope.version !== 7 || !envelope.meta || typeof envelope.meta !== "object") return false;
-    const meta = envelope.meta as Partial<MetaProgress>;
-    const records = meta.records as Partial<Record<GameMode, unknown>> | undefined;
-    if (
-      meta.version !== 7
-      || !Number.isFinite(meta.renown)
-      || typeof meta.seenTutorial !== "boolean"
-      || !records
-      || !(["expedition", "survival", "training"] as const).every((mode) => typeof records[mode] === "number" && Number.isFinite(records[mode] as number))
-      || !([meta.renown, ...Object.values(meta.prosperityRecords ?? {}), ...Object.values(meta.bossRecords ?? {}), ...Object.values(meta.eventRecords ?? {})]
-        .every((entry) => typeof entry === "number" && Number.isFinite(entry) && entry >= 0 && entry <= 1_000_000_000))
-      || !Array.isArray(meta.unlockedRegions)
-      || !meta.unlockedRegions.every((region) => typeof region === "string")
-    ) return false;
-    return envelope.run === null || this.isValidSaveRun(envelope.run);
-  }
-
   private normalizeEnvelope(value: unknown): SaveEnvelope | null {
     const candidate = migrateSaveEnvelope(value);
-    return candidate && this.isValidSaveEnvelope(candidate) ? candidate : null;
+    return candidate && isSafeSaveEnvelope(candidate) ? candidate : null;
   }
 
   private migrateLegacySlots(): void {
