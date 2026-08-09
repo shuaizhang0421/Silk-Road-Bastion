@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import {
   buildings,
+  bossEnemyType,
+  bossForNight,
   canAfford,
   createGame,
   directorWave,
@@ -13,6 +15,8 @@ import {
   regionById,
   regions,
   relics,
+  ASSET_VERSION,
+  PREVIOUS_SAVE_KEY,
   SAVE_KEY,
   SeedStreams,
   upgradeCost
@@ -28,9 +32,11 @@ import {
   makeResource,
   type CharacterRig
 } from "./models";
+import { migrateSaveEnvelope } from "./save-migration";
 import type {
   BuildingState,
   BuildingType,
+  BossKind,
   EnemyState,
   EnemyType,
   GameMode,
@@ -429,6 +435,7 @@ export class SilkRoadGame {
   private enemyObjects = new Map<string, EnemyVisual>();
   private resources: ResourceNode[] = [];
   private resourceLabels = new Map<string, HTMLButtonElement>();
+  private selectedResourceId: string | null = null;
   private choiceObjects: THREE.Group[] = [];
   private choiceLabels: HTMLButtonElement[] = [];
   private selectedBuild: BuildingType | null = null;
@@ -477,7 +484,10 @@ export class SilkRoadGame {
   private titlePreview = true;
   private sound = new Soundscape();
   private storageWarningShown = false;
-  private oasisRoadTexture?: THREE.Texture;
+  private effectiveQuality: "low" | "medium" | "high" = "high";
+  private qualitySampleTime = 0;
+  private qualityFrames = 0;
+  private qualityStableTime = 0;
   private courtyardPavingTexture?: THREE.Texture;
   private caravanRoadTexture?: THREE.Texture;
   private silkRoadPanoramaTexture?: THREE.Texture;
@@ -570,16 +580,12 @@ export class SilkRoadGame {
   constructor(canvas: HTMLCanvasElement, library: AssetLibrary) {
     this.canvas = canvas;
     this.library = library;
-    this.oasisRoadTexture = new THREE.TextureLoader().load("./assets/art/oasis-road-ground-v1-2048.jpg");
-    this.oasisRoadTexture.colorSpace = THREE.SRGBColorSpace;
-    this.oasisRoadTexture.wrapS = THREE.RepeatWrapping;
-    this.oasisRoadTexture.wrapT = THREE.RepeatWrapping;
-    this.oasisRoadTexture.repeat.set(2.2, 4.8);
     // 与模型一起等待加载，避免首局在贴图尚未就绪时把庭院固定成纯色底板。
     this.courtyardPavingTexture = this.library.worldTexture("courtyard-paving");
     this.caravanRoadTexture = this.library.worldTexture("caravan-road");
     this.silkRoadPanoramaTexture = new THREE.TextureLoader().load("./assets/art/silk-road-panorama-v1.jpg");
     this.silkRoadPanoramaTexture.colorSpace = THREE.SRGBColorSpace;
+    this.migrateLegacySlots();
     this.meta = this.loadMeta();
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -594,7 +600,8 @@ export class SilkRoadGame {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // 3D 场景优先稳定帧率：手机/平板控制像素密度，高分屏桌面也不无上限堆像素。
     const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer || window.innerWidth < 820 ? 1.18 : 1.5));
+    this.effectiveQuality = coarsePointer || window.innerWidth < 820 ? "medium" : "high";
+    this.applyQuality();
     this.camera = new THREE.PerspectiveCamera(39, 1, 0.1, 180);
     this.bindEvents();
     this.resize();
@@ -738,7 +745,7 @@ export class SilkRoadGame {
 
   getRecordsText(): string {
     // 行者历练当前仅在封面作为世界观预告，不能显示一条看似可刷却永远为 0 的纪录。
-    return `远征声望 ${this.meta.renown}<br>无尽远征最高 ${this.meta.records.expedition} 夜<br>极限守城最高 ${this.meta.records.survival} 夜<br>行者历练 · 后续开放`;
+    return `远征声望 ${this.meta.renown}<br>无尽 ${this.meta.records.expedition} 夜 · 首领 ${this.meta.bossRecords.expedition} · 事件 ${this.meta.eventRecords.expedition}<br>极限 ${this.meta.records.survival} 夜 · 首领 ${this.meta.bossRecords.survival} · 繁荣 ${this.meta.prosperityRecords.survival}<br>行者历练 · 后续开放`;
   }
 
   animate = (): void => {
@@ -757,8 +764,6 @@ export class SilkRoadGame {
     const limits = this.cameraLimits(width, height);
     this.cameraDistance = THREE.MathUtils.clamp(this.cameraDistance, limits.min, limits.max);
     this.camera.updateProjectionMatrix();
-    const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer || width < 820 ? 1.18 : 1.5));
     this.renderer.setSize(width, height, false);
   }
 
@@ -888,6 +893,7 @@ export class SilkRoadGame {
     this.enemyObjects.forEach((visual) => visual.label.remove());
     this.enemyObjects.clear();
     this.resources = [];
+    this.selectedResourceId = null;
     this.resourceLabels.forEach((label) => label.remove());
     this.resourceLabels.clear();
     this.choiceObjects = [];
@@ -950,10 +956,9 @@ export class SilkRoadGame {
 
     // 同一套实拍质感土石贴图按区域着色：峡谷、雾港和高原也保留碎石、车辙与磨损，
     // 不再只有绿洲有材质、其他地图退回一整块纯色平面。
-    const useOasisTexture = region.id === "oasis";
-    const terrainTexture = this.oasisRoadTexture;
+    const terrainTexture = this.library.worldTexture(`region-${region.id}`);
     const groundMaterial = new THREE.MeshStandardMaterial({
-      color: useOasisTexture ? 0xffffff : region.ground,
+      color: terrainTexture ? 0xffffff : region.ground,
       map: terrainTexture ?? null,
       bumpMap: terrainTexture ?? null,
       bumpScale: 0.18,
@@ -975,7 +980,7 @@ export class SilkRoadGame {
     const road = new THREE.Mesh(
       new THREE.PlaneGeometry(8.4, 54),
       new THREE.MeshStandardMaterial({
-        color: this.caravanRoadTexture ? 0xffffff : useOasisTexture ? 0xf0d9a1 : new THREE.Color(region.ground).lerp(new THREE.Color(0xe3cb91), 0.68),
+        color: this.caravanRoadTexture ? 0xffffff : new THREE.Color(region.ground).lerp(new THREE.Color(0xe3cb91), 0.68),
         map: this.caravanRoadTexture ?? terrainTexture ?? null,
         bumpMap: this.caravanRoadTexture ?? terrainTexture ?? null,
         bumpScale: 0.075,
@@ -1137,7 +1142,7 @@ export class SilkRoadGame {
     this.scene.fog = new THREE.FogExp2(0x52645d, 0.018);
     const ground = new THREE.Mesh(
       new THREE.CircleGeometry(29, 64),
-      new THREE.MeshStandardMaterial({ color: 0x655744, map: this.oasisRoadTexture ?? null, roughness: 0.98 })
+      new THREE.MeshStandardMaterial({ color: 0x655744, map: this.library.worldTexture("region-oasis") ?? null, roughness: 0.98 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -1303,7 +1308,8 @@ export class SilkRoadGame {
         damage: definition.damage + adventure.room * 2,
         position: { x: Math.sin(angle) * distance, z: -5 - Math.cos(angle) * distance },
         target: "player", targetId: null, attackCooldown: 0, slowedUntil: 0, targetedUntil: 0,
-        elite: isBoss && index === 0, lane: 0, formationRank: index, collisionRadius: type === "ram" ? 1.15 : 0.52, attackSlot: index, heightLayer: type === "flyer" ? 1 : 0
+        elite: isBoss && index === 0, lane: 0, formationRank: index, collisionRadius: type === "ram" ? 1.15 : 0.52, attackSlot: index, heightLayer: type === "flyer" ? 1 : 0,
+        bossKind: null, bossPhase: 0, attackRange: type === "archer" ? 15 : 1.6, windupUntil: 0
       };
       this.state!.enemies.push(enemy);
       this.createEnemyVisual(enemy);
@@ -1917,7 +1923,7 @@ export class SilkRoadGame {
       const tree = new THREE.Group();
       const trunk = new THREE.Mesh(
         new THREE.CylinderGeometry(0.2 * scale, 0.34 * scale, 3.4 * scale, 12),
-        new THREE.MeshStandardMaterial({ color: 0x5b3e2a, roughness: 0.98, bumpMap: this.oasisRoadTexture ?? null, bumpScale: 0.035 })
+        new THREE.MeshStandardMaterial({ color: 0x5b3e2a, roughness: 0.98 })
       );
       trunk.position.y = 1.7 * scale;
       trunk.rotation.z = Math.sin(seed) * 0.04;
@@ -2329,7 +2335,7 @@ function makeWindWornMound(
   private spawnFieldObjective(region: RegionDefinition): void {
     if (!this.state || !this.streams) return;
     if (!this.state.fieldObjective || this.state.fieldObjective.completed || !this.state.fieldObjective.id.startsWith(`${this.state.epoch}:`)) {
-    const types = ["ruin", "caravan", "scout", "repair", "cache", "aid"] as const;
+    const types = ["mine", "ruin", "caravan", "elite", "artisan", "aid"] as const;
     const type = this.streams.pick("event", [...types]);
       const node = this.streams.pick("event", FIELD_OBJECTIVE_POSITIONS);
       const position = { x: node.x, z: node.z };
@@ -2337,12 +2343,12 @@ function makeWindWornMound(
         ? { coin: 10, wood: 3 }
         : type === "ruin"
           ? { stone: 7, gear: 2 }
-          : type === "scout"
-            ? { coin: 6, gear: 3 }
-            : type === "repair"
-              ? { wood: 6, stone: 5 }
-              : type === "cache"
-                ? { coin: 8, gear: 5, stone: 4 }
+          : type === "mine"
+            ? { stone: 9, gear: 2 }
+            : type === "elite"
+              ? { coin: 12, gear: 4 }
+              : type === "artisan"
+                ? { wood: 6, stone: 5 }
                 : { coin: 4, wood: 4, gear: 2 };
       this.state.fieldObjective = { id: `${this.state.epoch}:${type}`, type, position, completed: false, reward };
     }
@@ -2351,12 +2357,12 @@ function makeWindWornMound(
     const object = makePedestal(region.accent, "route");
     object.scale.setScalar(0.72);
     object.position.set(objective.position.x, 0, objective.position.z);
-    const typeColor = objective.type === "aid" ? 0x6aa9a0 : objective.type === "cache" ? 0xd5a24e : objective.type === "scout" ? 0x7797b6 : region.accent;
+    const typeColor = objective.type === "aid" ? 0x6aa9a0 : objective.type === "mine" ? 0x9d8568 : objective.type === "elite" ? 0xa55345 : region.accent;
     const beacon = new THREE.Mesh(
-      objective.type === "cache" ? new THREE.BoxGeometry(1.15, 0.72, 0.82) : new THREE.OctahedronGeometry(0.56, 0),
+      objective.type === "mine" ? new THREE.DodecahedronGeometry(0.72, 0) : new THREE.OctahedronGeometry(0.56, 0),
       new THREE.MeshStandardMaterial({ color: typeColor, emissive: typeColor, emissiveIntensity: 0.28, roughness: 0.6 })
     );
-    beacon.position.y = objective.type === "cache" ? 1.05 : 1.5;
+    beacon.position.y = objective.type === "mine" ? 1.05 : 1.5;
     beacon.name = "artifact";
     object.add(beacon);
     if (objective.type === "aid") {
@@ -2646,6 +2652,7 @@ function makeWindWornMound(
     }
     const fieldObjective = this.findUserData(hit.object, "fieldObjective");
     if (typeof fieldObjective === "string" && this.state.fieldObjective) {
+      this.selectedResourceId = null;
       this.setMoveTarget(new THREE.Vector3(this.state.fieldObjective.position.x, 0, this.state.fieldObjective.position.z), true);
       return;
     }
@@ -2687,6 +2694,7 @@ function makeWindWornMound(
       return;
     }
     if (hit.object.userData.ground || this.findUserData(hit.object, "ground")) {
+      this.selectedResourceId = null;
       this.selectedBuildingId = null;
       if (this.rangeIndicator) {
         this.world.remove(this.rangeIndicator);
@@ -3169,6 +3177,7 @@ function makeWindWornMound(
   }
 
   private update(delta: number): void {
+    this.updateAdaptiveQuality(delta);
     this.playerRig?.mixer.update(delta);
     for (const visual of this.enemyObjects.values()) visual.rig?.mixer.update(delta);
     for (const ally of this.supportAllies) ally.rig.mixer.update(delta);
@@ -3231,6 +3240,43 @@ function makeWindWornMound(
       this.hudCooldown = 0.12;
       this.updateHud();
     }
+  }
+
+  private updateAdaptiveQuality(delta: number): void {
+    if (document.hidden || delta <= 0 || delta >= 0.049) return;
+    if (this.state?.qualityTier && this.state.qualityTier !== "auto") return;
+    this.qualitySampleTime += delta;
+    this.qualityFrames += 1;
+    if (this.qualitySampleTime < 3) return;
+    const fps = this.qualityFrames / this.qualitySampleTime;
+    this.qualitySampleTime = 0;
+    this.qualityFrames = 0;
+    const lowThreshold = this.effectiveQuality === "high" ? 46 : 31;
+    if (fps < lowThreshold) {
+      this.qualityStableTime = Math.min(0, this.qualityStableTime) - 3;
+      if (this.qualityStableTime <= -6) {
+        this.effectiveQuality = this.effectiveQuality === "high" ? "medium" : "low";
+        this.qualityStableTime = 0;
+        this.applyQuality();
+      }
+    } else if (fps > 56) {
+      this.qualityStableTime = Math.max(0, this.qualityStableTime) + 3;
+      if (this.qualityStableTime >= 15 && this.effectiveQuality !== "high") {
+        this.effectiveQuality = this.effectiveQuality === "low" ? "medium" : "high";
+        this.qualityStableTime = 0;
+        this.applyQuality();
+      }
+    } else {
+      this.qualityStableTime *= 0.5;
+    }
+  }
+
+  private applyQuality(): void {
+    const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+    const cap = this.effectiveQuality === "high" ? 1.5 : this.effectiveQuality === "medium" ? 1.18 : 0.9;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer ? Math.min(cap, 1.18) : cap));
+    this.renderer.shadowMap.enabled = this.effectiveQuality !== "low";
+    this.renderer.toneMappingExposure = this.effectiveQuality === "low" ? 0.98 : 0.94;
   }
 
   private updateGateAnimation(delta: number): void {
@@ -3334,13 +3380,24 @@ function makeWindWornMound(
    */
   private setResourceTarget(resource: ResourceNode): void {
     if (!this.playerRig) return;
+    this.selectedResourceId = resource.id;
     const origin = this.playerRig.root.position.clone().setY(0);
     const vector = resource.position.clone().sub(origin).setY(0);
     if (vector.lengthSq() < 0.02) {
       this.setMoveTarget(resource.position);
       return;
     }
-    const approach = resource.position.clone().addScaledVector(vector.normalize(), -2.12).setY(0);
+    const preferred = resource.position.clone().addScaledVector(vector.normalize(), -2.12).setY(0);
+    // 地貌装饰会随区域变化。若资源入口恰好落在岩石或水域边缘，从资源周围挑选
+    // 距玩家最近的可达入口，避免角色在模型边缘原地顶住或反复绕行。
+    const candidates = [preferred];
+    for (let index = 0; index < 16; index += 1) {
+      const angle = index / 16 * Math.PI * 2;
+      candidates.push(resource.position.clone().add(new THREE.Vector3(Math.cos(angle) * 2.25, 0, Math.sin(angle) * 2.25)));
+    }
+    const approach = candidates
+      .filter((candidate) => this.isNavigablePoint(candidate))
+      .sort((a, b) => a.distanceToSquared(origin) - b.distanceToSquared(origin))[0] ?? preferred;
     this.setMoveTarget(approach);
   }
 
@@ -3587,6 +3644,7 @@ function makeWindWornMound(
     this.resourceLabels.get(resource.id)?.remove();
     this.resourceLabels.delete(resource.id);
     this.resources = this.resources.filter((node) => node !== resource);
+    if (this.selectedResourceId === resource.id) this.selectedResourceId = null;
     this.sound.coin();
     this.burst(resource.position.clone().setY(1.2), regionById(this.state.regionId).accent, 10);
     this.setPrompt(key === "wood" ? "ph-tree" : key === "stone" ? "ph-mountains" : "ph-gear-six", `获得 ${amount}${key === "wood" ? " 木材" : key === "stone" ? " 石料" : " 机巧"}`);
@@ -3610,19 +3668,20 @@ function makeWindWornMound(
       this.world.remove(this.fieldObject);
       this.fieldObject = undefined;
     }
-    if (objective.type === "scout") this.state.scoutIntel = Math.max(this.state.scoutIntel ?? 0, 1);
+    if (objective.type === "elite") this.state.scoutIntel = Math.max(this.state.scoutIntel ?? 0, 1);
     if (objective.type === "aid") this.state.reinforcementNights = Math.max(this.state.reinforcementNights ?? 0, 1);
-    if (objective.type === "repair") {
+    if (objective.type === "artisan") {
       this.state.gateHp = Math.min(this.state.gateMaxHp, this.state.gateHp + 38);
       this.gateStatusTimer = 2.5;
     }
-    const names = { ruin: "遗迹搜索", caravan: "商队护送", scout: "营地侦察", repair: "机关维修", cache: "商路密匣", aid: "流浪守卫" };
+    this.state.eventsCompleted += 1;
+    const names = { mine: "矿脉开采", ruin: "遗迹搜索", caravan: "商队护送", elite: "精英哨所", artisan: "流浪匠师", aid: "援军营地", scout: "营地侦察", repair: "机关维修", cache: "商路密匣" };
     this.sound.coin();
-    const bonus = objective.type === "scout"
+    const bonus = objective.type === "elite"
       ? "，下一夜敌军规模已被侦察削减"
       : objective.type === "aid"
         ? "，两名守卫会在下一夜加入防线"
-        : objective.type === "repair"
+        : objective.type === "artisan"
           ? "，城门额外修复 38 点耐久"
           : "，奖励已送回驿站";
     this.setPrompt("ph-check-circle", `${names[objective.type]}完成${bonus}`);
@@ -3886,7 +3945,8 @@ function makeWindWornMound(
       return sum + (diminishing + tradeBonus + caravanBonus) * healthFactor;
     }, 0);
     const workshopBonus = this.state.relics.filter((entry) => entry === "workshop").length;
-    const rates = { coin: Math.ceil((1 + marketIncome * (this.state.regionId === "oasis" ? 1.25 : 1)) * efficiency), wood: 0, stone: 0, gear: 0 };
+    const moduleCoin = this.state.regionModule === "caravan-yard" ? 2 : 0;
+    const rates = { coin: Math.ceil((1 + moduleCoin + marketIncome * (this.state.regionId === "oasis" ? 1.25 : 1)) * efficiency), wood: 0, stone: 0, gear: 0 };
     // 军需库把“商栈的高等级石台”转换成稳定的材料补给，避免整局只等一座工坊的轮换。
     for (const building of markets) {
       if (building.level >= 3 && this.activeSpecialization(building) === "supply") rates[currentMaterial] += building.hp > 0 ? 1 : 0;
@@ -3974,16 +4034,32 @@ function makeWindWornMound(
       directorGenerated.splice(-Math.max(1, Math.ceil(directorGenerated.length * 0.18)));
       this.state.scoutIntel = 0;
     }
+    const bossKind = this.state.tutorialStep < 3 ? null : bossForNight(this.state.epoch, regionById(this.state.regionId));
+    this.state.bossKind = bossKind;
+    if (bossKind) {
+      directorGenerated.unshift(bossEnemyType(bossKind));
+      if (bossKind === "kite-swarm") directorGenerated.splice(1, 0, "flyer", "flyer");
+      this.sound.warning();
+      const bossNames: Record<BossKind, string> = {
+        "shield-commander": "盾卫统领",
+        "sapper-captain": "爆破队长",
+        "kite-swarm": "机械鸢群",
+        "siege-beast": "攻城巨兽"
+      };
+      this.setPrompt("ph-warning-diamond", `首领预警：${bossNames[bossKind]}即将抵达`);
+    }
     const wave = this.state.tutorialStep < 3 ? ["raider", "raider", "raider"] as const : directorGenerated;
     this.spawnQueue = wave.map((type, index) => {
       const definition = enemies[type];
-      const elite = this.state!.epoch % 5 === 0 && index === 0;
-      const healthScale = enemyHealthScale(this.state!.epoch, this.state!.mode) * (elite ? 1.5 : 1);
+      const isBoss = Boolean(bossKind && index === 0);
+      const elite = isBoss || (this.state!.epoch % 5 === 0 && index < 2);
+      const healthScale = enemyHealthScale(this.state!.epoch, this.state!.mode) * (isBoss ? 3.6 : elite ? 1.5 : 1);
       const combatSpeed = definition.speed
         * (1 + Math.min(0.18, this.state!.epoch * 0.009))
         * (this.state!.regionId === "mist" ? 0.88 : 1)
         * (this.state!.nightModifier?.enemySpeed ?? 1);
-      const damageScale = 1 + 0.052 * Math.max(0, this.state!.epoch - 1) + 0.0045 * Math.pow(Math.max(0, this.state!.epoch - 1), 1.35);
+      const readiness = this.state!.mode === "survival" ? this.state!.readinessPressure : 0;
+      const damageScale = (1 + 0.052 * Math.max(0, this.state!.epoch - 1) + 0.0045 * Math.pow(Math.max(0, this.state!.epoch - 1), 1.35)) * (1 + readiness * 0.045);
       return {
         id: `e-${this.state!.epoch}-${index}-${Math.floor(this.streams!.next("combat") * 99999)}`,
         type,
@@ -3992,7 +4068,7 @@ function makeWindWornMound(
         speed: combatSpeed,
         marchSpeed: combatSpeed * 1.6,
         combatSpeed,
-        damage: definition.damage * damageScale * (elite ? 1.28 : 1) * (this.state!.nightModifier?.enemyDamage ?? 1),
+        damage: definition.damage * damageScale * (isBoss ? 1.55 : elite ? 1.28 : 1) * (this.state!.nightModifier?.enemyDamage ?? 1),
         position: { x: (this.streams!.next("combat") - 0.5) * 5.8, z: -23.4 - (index % 3) * 0.65 },
         target: type === "flyer" ? "building" : "gate",
         targetId: null,
@@ -4004,7 +4080,11 @@ function makeWindWornMound(
         formationRank: Math.floor(index / 3),
         collisionRadius: type === "ram" ? 1.35 : type === "shield" ? 0.82 : 0.66,
         attackSlot: index % 6,
-        heightLayer: type === "flyer" ? 1 : 0
+        heightLayer: type === "flyer" ? 1 : 0,
+        bossKind: isBoss ? bossKind : null,
+        bossPhase: 0,
+        attackRange: type === "archer" ? 15 : 1.6,
+        windupUntil: 0
       };
     });
     this.state.enemies = [];
@@ -4162,7 +4242,7 @@ function makeWindWornMound(
         charge.castShadow = true;
         root.add(charge);
       }
-      if (enemy.type === "looter") {
+      if (enemy.type === "archer") {
         const bow = new THREE.Mesh(
           new THREE.TorusGeometry(0.55, 0.035, 6, 14, Math.PI * 1.45),
           new THREE.MeshStandardMaterial({ color: 0x85603d, roughness: 0.88 })
@@ -4173,7 +4253,7 @@ function makeWindWornMound(
         root.add(bow);
       }
     }
-    const baseScale = enemy.elite ? 1.22 : 1;
+    const baseScale = enemy.bossKind ? 1.48 : enemy.elite ? 1.22 : 1;
     root.scale.setScalar(baseScale);
     root.userData.baseScale = baseScale;
     root.position.set(enemy.position.x, enemy.type === "flyer" ? 3.2 : 0, enemy.position.z);
@@ -4183,7 +4263,7 @@ function makeWindWornMound(
     const label = document.createElement("button");
     label.type = "button";
     label.className = "enemy-world-label is-idle-status";
-    label.innerHTML = `<strong><b>${enemy.elite ? "精锐 " : ""}${enemies[enemy.type].name}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small></strong><span><i></i></span>`;
+    label.innerHTML = `<strong><b>${enemy.bossKind ? "首领 " : enemy.elite ? "精锐 " : ""}${enemies[enemy.type].name}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small></strong><span><i></i></span>`;
     label.addEventListener("click", () => this.selectEnemy(enemy.id));
     this.hud.buildingLabels.appendChild(label);
     this.enemyObjects.set(enemy.id, { object: root, rig, flash: 0, stolen: false, label });
@@ -4205,7 +4285,7 @@ function makeWindWornMound(
       const visual = this.enemyObjects.get(enemy.id);
       if (!visual) continue;
       const playerOutside = this.playerRig && !this.isInsideFort(this.playerRig.root.position);
-      if (playerOutside && (enemy.type === "raider" || enemy.type === "looter") && visual.object.position.z < -10.5) {
+      if (playerOutside && (enemy.type === "raider" || enemy.type === "looter" || enemy.type === "archer") && visual.object.position.z < -10.5) {
         enemy.target = "player";
         enemy.targetId = null;
       } else if (enemy.target === "player" && !playerOutside) {
@@ -4240,8 +4320,8 @@ function makeWindWornMound(
       const isBarricaded = Boolean(blockingFortification);
       // 游弓手会在城门外射击，但停点始终由床弩的基础射程覆盖。
       // 拒马比城门更靠外，因此缩短其对拒马的射程，避免再站到塔防覆盖外。
-      const attackRange = enemy.type === "looter" && enemy.target !== "player"
-        ? (isTargetingFortification ? 4.25 : 8.2)
+      const attackRange = enemy.type === "archer"
+        ? (enemy.target === "player" ? 12.5 : isTargetingFortification ? 10.5 : enemy.attackRange)
         : enemy.type === "ram" ? 2.6 : 1.55;
       if (distance > attackRange) {
         const direction = destination.clone().sub(visual.object.position).setY(0).normalize();
@@ -4274,13 +4354,14 @@ function makeWindWornMound(
         enemy.position.x = visual.object.position.x;
         enemy.position.z = visual.object.position.z;
       } else if (enemy.attackCooldown <= 0) {
-        enemy.attackCooldown = enemy.type === "ram" ? 2 : 1.15;
+        enemy.attackCooldown = enemy.type === "ram" ? 2 : enemy.type === "archer" ? 1.65 : 1.15;
+        if (enemy.type === "archer") enemy.windupUntil = now + 420;
         visual.rig?.attack();
         const fortification = this.state.fortifications.find((entry) => entry.built && entry.hp > 0 && entry.lane === enemy.lane && enemy.type !== "flyer");
         if (fortification && enemy.target === "gate" && visual.object.position.z < -16.8) {
-          const damage = enemy.damage * (enemy.type === "sapper" ? 1.7 : enemy.type === "looter" ? 0.78 : 1);
+          const damage = enemy.damage * (enemy.type === "sapper" ? 1.7 : enemy.type === "archer" ? 0.78 : 1);
           fortification.hp = Math.max(0, fortification.hp - damage);
-          if (enemy.type === "looter") {
+          if (enemy.type === "archer") {
             const target = this.fortificationObjects.get(fortification.id)?.position.clone().setY(1.05)
               ?? fortificationPosition(fortification.lane).setY(1.05);
             this.fireProjectile(visual.object.position.clone().setY(2.1), target, 0xd9b76a);
@@ -4292,9 +4373,10 @@ function makeWindWornMound(
           if (fortification.hp <= 0) this.setPrompt("ph-fence", "道路拒马被拆除，敌军正转向城门");
         } else if (enemy.target === "gate" && this.state.gateHp > 0) {
           const braceStacks = this.state.relics.filter((entry) => entry === "gate-brace").length;
-          const armor = Math.max(0.62, (this.state.relics.includes("gate-armor") ? 0.88 : 1) * (1 - braceStacks * 0.05));
-          const damage = enemy.damage * (enemy.type === "sapper" ? 1.55 : enemy.type === "looter" ? 0.78 : 1) * armor;
-          if (enemy.type === "looter") this.fireProjectile(visual.object.position.clone().setY(2.1), new THREE.Vector3(0, 2.6, -12), 0xd9b76a);
+          const moduleArmor = this.state.regionModule === "side-gate" ? 0.9 : 1;
+          const armor = Math.max(0.58, (this.state.relics.includes("gate-armor") ? 0.88 : 1) * (1 - braceStacks * 0.05) * moduleArmor);
+          const damage = enemy.damage * (enemy.type === "sapper" ? 1.55 : enemy.type === "archer" ? 0.78 : 1) * armor;
+          if (enemy.type === "archer") this.fireProjectile(visual.object.position.clone().setY(2.1), new THREE.Vector3(0, 2.6, -12), 0xd9b76a);
           this.state.gateHp = Math.max(0, this.state.gateHp - damage);
           this.state.recentDamage += damage;
           this.hitGate();
@@ -4304,7 +4386,9 @@ function makeWindWornMound(
             this.setPrompt("ph-door-open", "城门已破，敌人正在攻击驿站主帐。主帐血条归零才会失败");
           }
         } else if (enemy.target === "player" && this.playerRig) {
-          this.state.player.hp = Math.max(0, this.state.player.hp - enemy.damage);
+          const armorStacks = this.state.relics.filter((entry) => entry === "hero-armor").length;
+          const playerDamage = enemy.damage * Math.max(0.7, 1 - armorStacks * 0.1);
+          this.state.player.hp = Math.max(0, this.state.player.hp - playerDamage);
           this.cameraShake = 0.22;
           this.sound.hit();
           this.burst(this.playerRig.root.position.clone().setY(1.5), 0xd55d48, 6);
@@ -4329,7 +4413,7 @@ function makeWindWornMound(
             this.state.recentDamage += damage;
             this.state.nightSpeed = 1;
             this.sound.hit();
-            if (enemy.type === "looter") this.fireProjectile(visual.object.position.clone().setY(2.1), object.position.clone().setY(2.1), 0xd9b76a);
+            if (enemy.type === "archer") this.fireProjectile(visual.object.position.clone().setY(2.1), object.position.clone().setY(2.1), 0xd9b76a);
             this.burst(object.position.clone().setY(2), 0xd55d48, 6);
             if (enemy.type === "looter" && building.type === "market" && !visual.stolen) {
               visual.stolen = true;
@@ -4351,7 +4435,7 @@ function makeWindWornMound(
           this.cameraShake = 0.32;
           this.state.nightSpeed = 1;
           this.sound.hit();
-          if (enemy.type === "looter") this.fireProjectile(visual.object.position.clone().setY(2.1), CORE_POSITION.clone().setY(2.4), 0xd9b76a);
+          if (enemy.type === "archer") this.fireProjectile(visual.object.position.clone().setY(2.1), CORE_POSITION.clone().setY(2.4), 0xd9b76a);
           this.burst(CORE_POSITION.clone().setY(2.5), 0xd55d48, 8);
           if (this.state.coreHp <= 0) {
             this.endRun();
@@ -4366,6 +4450,19 @@ function makeWindWornMound(
       } else {
         visual.object.scale.setScalar(Number(visual.object.userData.baseScale ?? 1));
       }
+      if (enemy.bossKind) {
+        const ratio = enemy.hp / Math.max(1, enemy.maxHp);
+        const phase = ratio <= 0.3 ? 2 : ratio <= 0.65 ? 1 : 0;
+        if (phase > enemy.bossPhase) {
+          enemy.bossPhase = phase as 0 | 1 | 2;
+          enemy.combatSpeed *= 1.1;
+          enemy.marchSpeed *= 1.08;
+          enemy.damage *= 1.12;
+          this.sound.warning();
+          this.cameraShake = 0.32;
+          this.setPrompt("ph-warning", `首领进入第 ${phase + 1} 阶段，攻击节奏加快`);
+        }
+      }
     }
   }
 
@@ -4378,6 +4475,7 @@ function makeWindWornMound(
     }
     const preferred: Partial<Record<EnemyState["type"], BuildingType[]>> = {
       looter: ["market"],
+      archer: ["ballista", "antiair", "fire", "market"],
       sapper: ["ballista", "fire", "workshop"],
       flyer: ["market", "workshop", "ballista", "fire"],
       shield: ["ballista", "fire"],
@@ -4439,7 +4537,8 @@ function makeWindWornMound(
         if (!visual) continue;
         const distance = visual.object.position.distanceTo(object.position);
         const priority = (building.type === "antiair" && enemy.type === "flyer" ? -8 : 0)
-          + (enemy.type === "looter" && enemy.target === "gate" ? -2.4 : 0);
+          + (enemy.type === "archer" ? -2.4 : 0)
+          + (enemy.bossKind ? -3 : 0);
         const effectiveRange = this.towerRange(building);
         if (distance < effectiveRange && distance + priority < nearestDistance) {
           nearest = enemy;
@@ -4455,8 +4554,13 @@ function makeWindWornMound(
       const airRelics = this.state.relics.filter((entry) => entry === "air-damage").length;
       const airMultiplier = building.type === "antiair" && nearest.type === "flyer" ? (specialization === "hunter" ? 2.25 : 1.8) * (1 + airRelics * 0.3) : 1;
       const siegeMultiplier = building.type === "trebuchet" && specialization === "siege" && (nearest.type === "ram" || nearest.type === "shield") ? 1.38 : 1;
-      const fireMultiplier = building.type === "fire" && specialization === "burn" ? 1.2 : 1;
-      const damage = definition.attack * building.level * (1 + damageBoost) * piercing * airMultiplier * siegeMultiplier * fireMultiplier;
+      const fireDamageStacks = this.state.relics.filter((entry) => entry === "fire-damage").length;
+      const fireMultiplier = building.type === "fire"
+        ? (specialization === "burn" ? 1.2 : 1) * (1 + fireDamageStacks * 0.25)
+        : 1;
+      const antiRanged = nearest.type === "archer" && this.state.relics.includes("anti-ranged") ? 1.3 : 1;
+      const bossDamage = nearest.bossKind ? 1 + this.state.relics.filter((entry) => entry === "boss-damage").length * 0.18 : 1;
+      const damage = definition.attack * building.level * (1 + damageBoost) * piercing * airMultiplier * siegeMultiplier * fireMultiplier * antiRanged * bossDamage;
       nearest.hp -= damage;
       nearest.targetedUntil = performance.now() + 650;
       if (building.type === "fire") {
@@ -4507,7 +4611,8 @@ function makeWindWornMound(
       }
       const rapidBonus = 1 + this.state.relics.filter((entry) => entry === "rapid").length * 0.08;
       const speedBonus = ((building.type === "ballista" && specialization === "watch") || (building.type === "antiair" && specialization === "volley") ? 1.18 : 1) * rapidBonus;
-      this.buildingCooldowns.set(building.id, (definition.cooldown ?? 1) / ((1 + building.level * 0.08) * speedBonus));
+      const moduleSpeed = this.state.regionModule === "mechanism-emplacement" ? 1.1 : 1;
+      this.buildingCooldowns.set(building.id, (definition.cooldown ?? 1) / ((1 + building.level * 0.08) * speedBonus * moduleSpeed));
       this.sound.bolt();
     }
   }
@@ -4519,7 +4624,12 @@ function makeWindWornMound(
     const relicMultiplier = 1 + Math.min(0.24, rangeStacks * 0.06);
     const specializationBonus = building.type === "ballista" && building.level >= 3 && this.activeSpecialization(building) === "watch" ? 10 : 0;
     const levelBonus = Math.min(6, Math.max(0, building.level - 1) * 1.5);
-    return (definition.range + specializationBonus + levelBonus) * relicMultiplier;
+    const moduleMultiplier = this.state?.regionModule === "high-ground" ? 1.12 : 1;
+    // 扩城后的后排石台距离城门更远，通过院墙上的传令标与抛射校准获得补偿射界。
+    // 这不是隐藏增伤：建造预览与选中射程圈都调用同一函数，显示的就是实际范围。
+    const pad = PAD_POSITIONS[building.padIndex];
+    const rearRelayBonus = pad ? Math.min(16, Math.max(0, pad.z - 4) * 0.88) : 0;
+    return (definition.range + specializationBonus + levelBonus + rearRelayBonus) * relicMultiplier * moduleMultiplier;
   }
 
   private cleanupEnemies(): void {
@@ -4544,6 +4654,12 @@ function makeWindWornMound(
         this.state.resources.stone += salvageStacks * 2;
         this.state.resources.gear += salvageStacks;
       }
+      if (enemy.bossKind) {
+        this.state.bossKills += 1;
+        this.state.resources.coin += 18;
+        this.state.resources.gear += 5;
+        this.setPrompt("ph-trophy", "首领已击败，本夜奖励至少为稀有品质");
+      }
       this.state.kills += 1;
       this.state.renownEarned += enemy.type === "ram" ? 2 : 1;
     }
@@ -4565,6 +4681,11 @@ function makeWindWornMound(
     this.state.buildings.forEach((building) => {
       if (building.hp > 0) building.hp = Math.min(building.maxHp, building.hp + Math.round(building.maxHp * 0.04 * maintenanceMultiplier));
     });
+    if (this.state.mode === "survival") {
+      const destroyed = this.state.buildings.filter((building) => building.hp <= 0).length;
+      const damagePressure = this.state.recentDamage / Math.max(180, this.state.gateMaxHp + this.state.coreMaxHp);
+      this.state.readinessPressure = THREE.MathUtils.clamp(this.state.readinessPressure * 0.82 + damagePressure * 2.1 + destroyed * 0.3, 0, 5);
+    }
     if (this.state.relics.includes("ration")) {
       this.state.player.hp = Math.min(this.state.player.maxHp, this.state.player.hp + 35);
     }
@@ -4597,10 +4718,12 @@ function makeWindWornMound(
     this.state.phaseTime = 0;
     const stackCount = (id: string) => this.state!.relicStacks.find((entry) => entry.id === id)?.stacks ?? 0;
     const isSupplyNight = this.state.mode === "survival" && this.state.epoch % 3 === 0;
+    const isBossNight = this.state.epoch % 5 === 0;
     let pool = relics.filter((relic) => stackCount(relic.id) < relic.maxStacks);
-    pool = isSupplyNight
+    pool = isSupplyNight && !isBossNight
       ? pool.filter((relic) => relic.effect === "supply")
-      : pool.filter((relic) => relic.effect !== "supply");
+      : pool.filter((relic) => relic.effect !== "supply" || (isBossNight && relic.tags?.includes("boss")));
+    if (!isBossNight) pool = pool.filter((relic) => !relic.tags?.includes("boss"));
     // 专属遗物必须对应已建成的实体。否则第一夜拿到“火油塔减速”一类奖励会完全无效。
     const immediatelyUseful = pool.filter((relic) => this.isRelicImmediatelyUseful(relic));
     if (immediatelyUseful.length >= 3) pool = immediatelyUseful;
@@ -4616,7 +4739,11 @@ function makeWindWornMound(
         building.type === "market" ? "trade" : building.type === "workshop" ? "production" : "weapon"
       )
     );
-    const preferred = this.streams.shuffle("event", pool.filter((relic) => preferredCategories.has(relic.category)))[0];
+    const mustIncludeRare = this.state.epoch % 5 === 0 || this.state.rarePity >= 2;
+    const rarePool = pool.filter((relic) => relic.rarity === "rare" || relic.rarity === "legendary");
+    const preferred = mustIncludeRare && rarePool.length
+      ? this.streams.shuffle("event", rarePool)[0]
+      : this.streams.shuffle("event", pool.filter((relic) => preferredCategories.has(relic.category)))[0];
     const shuffled = this.streams.shuffle("event", pool.filter((relic) => relic.id !== preferred?.id));
     const choices = [...(preferred ? [preferred] : []), ...shuffled].slice(0, 3);
     while (choices.length < 3) {
@@ -4636,8 +4763,9 @@ function makeWindWornMound(
 
   private isRelicImmediatelyUseful(relic: RelicDefinition): boolean {
     if (!this.state) return true;
-    if (relic.effect === "supply") return this.state.mode === "survival";
+    if (relic.effect === "supply") return this.state.mode === "survival" || relic.tags?.includes("boss") === true;
     const has = (type: BuildingType) => this.state!.buildings.some((building) => building.type === type && building.hp > 0);
+    if (relic.requiresBuilding && !has(relic.requiresBuilding)) return false;
     const hasWeapon = this.state.buildings.some((building) => Boolean(buildings[building.type].attack) && building.hp > 0);
     if (relic.effect === "trade" || relic.effect === "double-trade") return has("market");
     if (relic.effect === "workshop" || relic.effect === "gear" || relic.effect === "resilient") return has("workshop");
@@ -4672,9 +4800,12 @@ function makeWindWornMound(
         const rarity = choice?.rarity === "legendary" ? "传奇" : choice?.rarity === "rare" ? "稀有" : "普通";
         label.innerHTML = `<i class="ph ${choice?.icon ?? "ph-sparkle"}"></i><strong>${choice?.name ?? "未知遗物"} · ${rarity}</strong><small>${choice?.text ?? ""}${stacks ? `（已叠 ${stacks} 层）` : ""}</small>`;
       } else {
-        const route = regionById(option.id);
+        const [routeId, moduleId] = option.id.split("|");
+        const route = regionById(routeId!);
         const threatNames = route.threat.slice(0, 2).map((type) => enemies[type].name).join("、");
-        label.innerHTML = `<i class="ph ph-mountains"></i><strong>${route.name}</strong><small>${route.perk}<br>主力敌军：${threatNames}</small>`;
+        const moduleNames: Record<string, string> = { "high-ground": "高台射界", "side-gate": "侧门防线", "caravan-yard": "商队院", "mechanism-emplacement": "机关阵地" };
+        const moduleText = moduleId ? `<br>区域模块：${moduleNames[moduleId] ?? moduleId}` : "";
+        label.innerHTML = `<i class="ph ph-mountains"></i><strong>${route.name}</strong><small>${route.perk}${moduleText}<br>主力敌军：${threatNames}</small>`;
       }
       label.addEventListener("click", () => this.selectChoice(index));
       this.hud.choiceLabels.appendChild(label);
@@ -4691,6 +4822,10 @@ function makeWindWornMound(
       const relic = relics.find((entry) => entry.id === id);
       if (!relic) return;
       relic.apply(this.state);
+      if (this.state.mode === "survival" && relic.effect === "supply") {
+        this.state.readinessPressure = Math.max(0, this.state.readinessPressure - 0.45);
+      }
+      this.state.rarePity = relic.rarity === "common" ? Math.min(3, this.state.rarePity + 1) : 0;
       const existing = this.state.relicStacks.find((entry) => entry.id === relic.id);
       if (existing) existing.stacks = Math.min(relic.maxStacks, existing.stacks + 1);
       else this.state.relicStacks.push({ id: relic.id, stacks: 1 });
@@ -4702,15 +4837,18 @@ function makeWindWornMound(
         const available = regions.filter((region) => this.meta.unlockedRegions.includes(region.id) && region.id !== this.state!.regionId);
         const routes = this.streams.shuffle("region", available).slice(0, 3);
         while (routes.length < 3) routes.push(regionById(this.state.regionId));
-        this.state.pendingChoices = routes.map((route) => route.id);
-        this.spawnChoices("route", routes.map((route) => ({ id: route.id, color: route.accent })));
-        this.setPrompt("ph-map-trifold", "选择一座地貌沙盘，迁往下一片区域");
+        const modules = this.streams.shuffle("region", ["high-ground", "side-gate", "caravan-yard", "mechanism-emplacement"] as const);
+        this.state.pendingChoices = routes.map((route, routeIndex) => this.state!.expansionLevel >= 3 ? `${route.id}|${modules[routeIndex]!}` : route.id);
+        this.spawnChoices("route", this.state.pendingChoices.map((routeId) => ({ id: routeId, color: regionById(routeId.split("|")[0]!).accent })));
+        this.setPrompt("ph-map-trifold", this.state.expansionLevel >= 3 ? "选择下一片区域及其防线模块" : "选择一座地貌沙盘，迁往下一片区域");
       } else {
         this.nextEpoch();
       }
     } else if (this.state.phase === "route") {
-      this.state.regionId = id;
+      const [regionId, moduleId] = id.split("|");
+      this.state.regionId = regionId!;
       this.state.expansionLevel = Math.min(3, this.state.expansionLevel + 1);
+      this.state.regionModule = (moduleId as GameState["regionModule"]) ?? this.state.regionModule;
       this.state.terrainVariant = Math.floor(this.streams.next("world") * 4);
       this.renderHotbar();
       this.renderModelThumbnails();
@@ -4869,8 +5007,8 @@ function makeWindWornMound(
       : "";
     this.hud.objective.textContent = tutorialObjective ?? (this.state.phase === "day"
       ? this.state.mode === "survival"
-        ? `固定 8 石台 · ${this.state.epoch % 3 === 0 ? "本夜后补给三选一" : `再守 ${3 - this.state.epoch % 3} 夜获得补给`}${productionHint}`
-        : `探索或建设，城内可立即入夜${productionHint}`
+        ? `固定 8 石台 · 战备压力 ${Math.round(this.state.readinessPressure * 20)}% · ${this.state.epoch % 3 === 0 ? "本夜后补给" : `再守 ${3 - this.state.epoch % 3} 夜补给`}${productionHint}`
+        : `${this.state.regionModule ? `区域战术：${({ "high-ground": "高台射界", "side-gate": "侧门防线", "caravan-yard": "商队院", "mechanism-emplacement": "机关阵地" } as const)[this.state.regionModule]} · ` : ""}探索或建设${productionHint}`
       : this.state.phase === "night"
         ? `过关条件：击退本夜全部 ${this.state.enemies.length + this.spawnQueue.length} 名敌军`
         : this.state.phase === "clear"
@@ -4954,10 +5092,10 @@ function makeWindWornMound(
     this.hud.fieldObjective.classList.toggle("is-hidden", this.state.phase !== "day" || !objective || objective.completed);
     if (objective && !objective.completed && this.playerRig) {
       const distance = Math.round(this.playerRig.root.position.distanceTo(new THREE.Vector3(objective.position.x, 0, objective.position.z)));
-      const names = { ruin: "遗迹", caravan: "商队", scout: "侦察", repair: "修缮", cache: "密匣", aid: "援军" };
+      const names = { mine: "矿脉", ruin: "遗迹", caravan: "商队", elite: "哨所", artisan: "匠师", aid: "援军", scout: "侦察", repair: "修缮", cache: "密匣" };
       this.hud.fieldObjectiveText.textContent = `${names[objective.type]} ${distance}m`;
       const icon = this.hud.fieldObjective.querySelector("i");
-      const icons = { ruin: "ph-mountains", caravan: "ph-storefront", scout: "ph-binoculars", repair: "ph-hammer", cache: "ph-treasure-chest", aid: "ph-shield-star" };
+      const icons = { mine: "ph-pickaxe", ruin: "ph-mountains", caravan: "ph-storefront", elite: "ph-crosshair", artisan: "ph-hammer", aid: "ph-shield-star", scout: "ph-binoculars", repair: "ph-hammer", cache: "ph-treasure-chest" };
       if (icon) icon.className = `ph ${icons[objective.type]}`;
     }
     this.hud.hotbar.querySelectorAll<HTMLButtonElement>(".build-slot").forEach((button) => {
@@ -5021,7 +5159,7 @@ function makeWindWornMound(
               ? "ph-house-line"
               : "ph-person-simple-run";
         strong.innerHTML = enemy.id === this.selectedEnemyId
-          ? `<b>${enemy.elite ? "精锐 " : ""}${enemies[enemy.type].name}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small>`
+          ? `<b>${enemy.bossKind ? "首领 " : enemy.elite ? "精锐 " : ""}${enemies[enemy.type].name}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small>`
           : `<b aria-label="${enemies[enemy.type].name}${slowed ? "，已减速" : ""}"></b>`;
       }
       if (fill) fill.style.width = `${Math.max(0, enemy.hp / enemy.maxHp) * 100}%`;
@@ -5052,7 +5190,7 @@ function makeWindWornMound(
         const label = this.resourceLabels.get(resource.id);
         if (!label) continue;
         const distance = playerPosition.distanceTo(resource.position);
-        const routeSelected = this.clickRoute.some((point) => point.distanceToSquared(resource.position) < 1);
+        const routeSelected = resource.id === this.selectedResourceId;
         // 院内不让八个资源牌抢 HUD；出城后，附近资源和已点选资源才获得清晰标签。
         label.classList.toggle("is-idle-status", !(routeSelected || (outside && distance < 29)));
         this.positionElement(label, resource.position.clone().setY(4.25));
@@ -5120,9 +5258,14 @@ function makeWindWornMound(
     this.meta.renown += Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch));
     const recordValue = finished.mode === "training" ? (finished.adventure?.room ?? 1) : finished.epoch;
     this.meta.records[finished.mode] = Math.max(this.meta.records[finished.mode], recordValue);
+    if (finished.mode !== "training") {
+      this.meta.prosperityRecords[finished.mode] = Math.max(this.meta.prosperityRecords[finished.mode], finished.prosperity);
+      this.meta.bossRecords[finished.mode] = Math.max(this.meta.bossRecords[finished.mode], finished.bossKills);
+      this.meta.eventRecords[finished.mode] = Math.max(this.meta.eventRecords[finished.mode], finished.eventsCompleted);
+    }
     const envelope: SaveEnvelope = {
       schema: "silk-road-bastion",
-      version: 6,
+      version: 7,
       savedAt: Date.now(),
       run: null,
       meta: this.meta
@@ -5131,7 +5274,7 @@ function makeWindWornMound(
     document.querySelector("#resultEpoch")!.textContent = finished.mode === "training" ? `行至第 ${finished.adventure?.room ?? 1} 处营地` : `守至第 ${finished.epoch} 夜`;
     document.querySelector("#resultStats")!.innerHTML = finished.mode === "training"
       ? `等级 ${finished.adventure?.level ?? 1}<br>获得装备 ${finished.adventure?.gear.length ?? 0}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`
-      : `击败敌军 ${finished.kills}<br>最终繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`;
+      : `击败敌军 ${finished.kills}<br>首领 ${finished.bossKills} · 事件 ${finished.eventsCompleted}<br>最终繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`;
     this.hud.root.classList.add("is-hidden");
     this.hud.waveClear.classList.add("is-hidden");
     this.hud.gameOver.classList.remove("is-hidden");
@@ -5140,7 +5283,7 @@ function makeWindWornMound(
   save(): void {
     const envelope: SaveEnvelope = {
       schema: "silk-road-bastion",
-      version: 6,
+      version: 7,
       savedAt: Date.now(),
       run: this.state && this.state.phase !== "gameover" ? this.state : null,
       meta: this.meta
@@ -5172,33 +5315,66 @@ function makeWindWornMound(
   private isValidSaveRun(value: unknown): value is GameState {
     if (!value || typeof value !== "object") return false;
     const run = value as Partial<GameState>;
-    if (run.version !== 6 || !["expedition", "survival", "training"].includes(run.mode ?? "") || typeof run.seed !== "string") return false;
+    if (run.version !== 7 || !["expedition", "survival", "training"].includes(run.mode ?? "") || typeof run.seed !== "string") return false;
     const requiredNumbers = [run.epoch, run.phaseTime, run.dayLength, run.gateHp, run.gateMaxHp, run.coreHp, run.coreMaxHp];
     if (!requiredNumbers.every((entry) => typeof entry === "number" && Number.isFinite(entry))) return false;
+    if ((run.epoch ?? 0) < 1 || (run.epoch ?? 0) > 100_000 || (run.dayLength ?? 0) < 1 || (run.dayLength ?? 0) > 600) return false;
+    if ((run.gateHp ?? -1) < 0 || (run.gateMaxHp ?? 0) <= 0 || (run.gateHp ?? 0) > (run.gateMaxHp ?? 0) * 1.01) return false;
+    if ((run.coreHp ?? -1) < 0 || (run.coreMaxHp ?? 0) <= 0 || (run.coreHp ?? 0) > (run.coreMaxHp ?? 0) * 1.01) return false;
     if (typeof run.regionId !== "string" || !["day", "night", "clear", "relic", "route", "adventure", "adventure-choice", "gameover"].includes(run.phase ?? "")) return false;
     const resources = run.resources as Partial<Resources> | undefined;
-    if (!resources || !(["coin", "wood", "stone", "gear"] as const).every((key) => typeof resources[key] === "number" && Number.isFinite(resources[key]!))) return false;
+    if (!resources || !(["coin", "wood", "stone", "gear"] as const).every((key) => typeof resources[key] === "number" && Number.isFinite(resources[key]!) && resources[key]! >= 0 && resources[key]! <= 1_000_000_000)) return false;
     const player = run.player;
     if (!player || !Number.isFinite(player.hp) || !Number.isFinite(player.maxHp) || !Number.isFinite(player.position?.x) || !Number.isFinite(player.position?.z)) return false;
-    return Array.isArray(run.buildings) && Array.isArray(run.enemies) && Array.isArray(run.relics) && Array.isArray(run.fortifications);
+    if (!(["auto", "low", "medium", "high"] as const).includes(run.qualityTier ?? "auto")) return false;
+    if (!Number.isFinite(run.bossKills) || !Number.isFinite(run.eventsCompleted) || (run.bossKills ?? -1) < 0 || (run.eventsCompleted ?? -1) < 0) return false;
+    if (typeof run.assetVersion !== "string" || run.assetVersion.length > 80) return false;
+    return Array.isArray(run.buildings) && run.buildings.length <= 32
+      && Array.isArray(run.enemies) && run.enemies.length <= 100
+      && Array.isArray(run.relics) && run.relics.length <= 500
+      && Array.isArray(run.fortifications) && run.fortifications.length <= 12;
   }
 
   private isValidSaveEnvelope(value: unknown): value is SaveEnvelope {
     if (!value || typeof value !== "object") return false;
     const envelope = value as Partial<SaveEnvelope>;
-    if (envelope.schema !== "silk-road-bastion" || envelope.version !== 6 || !envelope.meta || typeof envelope.meta !== "object") return false;
+    if (envelope.schema !== "silk-road-bastion" || envelope.version !== 7 || !envelope.meta || typeof envelope.meta !== "object") return false;
     const meta = envelope.meta as Partial<MetaProgress>;
     const records = meta.records as Partial<Record<GameMode, unknown>> | undefined;
     if (
-      meta.version !== 6
+      meta.version !== 7
       || !Number.isFinite(meta.renown)
       || typeof meta.seenTutorial !== "boolean"
       || !records
       || !(["expedition", "survival", "training"] as const).every((mode) => typeof records[mode] === "number" && Number.isFinite(records[mode] as number))
+      || !([meta.renown, ...Object.values(meta.prosperityRecords ?? {}), ...Object.values(meta.bossRecords ?? {}), ...Object.values(meta.eventRecords ?? {})]
+        .every((entry) => typeof entry === "number" && Number.isFinite(entry) && entry >= 0 && entry <= 1_000_000_000))
       || !Array.isArray(meta.unlockedRegions)
       || !meta.unlockedRegions.every((region) => typeof region === "string")
     ) return false;
     return envelope.run === null || this.isValidSaveRun(envelope.run);
+  }
+
+  private normalizeEnvelope(value: unknown): SaveEnvelope | null {
+    const candidate = migrateSaveEnvelope(value);
+    return candidate && this.isValidSaveEnvelope(candidate) ? candidate : null;
+  }
+
+  private migrateLegacySlots(): void {
+    try {
+      for (let slot = 0; slot < 3; slot += 1) {
+        if (localStorage.getItem(`${SAVE_KEY}:slot:${slot}`)) continue;
+        const legacyKey = `${PREVIOUS_SAVE_KEY}:slot:${slot}`;
+        const raw = localStorage.getItem(legacyKey);
+        if (!raw) continue;
+        const migrated = this.normalizeEnvelope(JSON.parse(raw));
+        if (!migrated) continue;
+        localStorage.setItem(`${PREVIOUS_SAVE_KEY}:backup:slot:${slot}`, raw);
+        localStorage.setItem(`${SAVE_KEY}:slot:${slot}`, JSON.stringify(migrated));
+      }
+    } catch {
+      // 本地存储不可用时继续运行；玩家仍可通过导出文件迁移。
+    }
   }
 
   private envelopeForSlot(slot: number): SaveEnvelope | null {
@@ -5206,7 +5382,7 @@ function makeWindWornMound(
       const raw = localStorage.getItem(this.slotKey(slot));
       if (!raw) return null;
       const parsed = JSON.parse(raw) as unknown;
-      return this.isValidSaveEnvelope(parsed) ? parsed : null;
+      return this.normalizeEnvelope(parsed);
     } catch { return null; }
   }
 
@@ -5239,11 +5415,11 @@ function makeWindWornMound(
 
   public exportSaves(): void {
     const slots = [0, 1, 2].map((slot) => this.envelopeForSlot(slot));
-    const blob = new Blob([JSON.stringify({ schema: "silk-road-bastion-export", version: 6, exportedAt: Date.now(), slots }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ schema: "silk-road-bastion-export", version: 7, assetVersion: ASSET_VERSION, exportedAt: Date.now(), slots }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "silk-road-bastion-v6-save.json";
+    link.download = "silk-road-bastion-v7-save.json";
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -5251,10 +5427,11 @@ function makeWindWornMound(
   public async importSaves(file: File): Promise<void> {
     try {
       const parsed = JSON.parse(await file.text()) as { schema?: string; version?: number; slots?: Array<SaveEnvelope | null> };
-      if (parsed.schema !== "silk-road-bastion-export" || parsed.version !== 6 || !Array.isArray(parsed.slots)) throw new Error("格式不正确");
+      if (parsed.schema !== "silk-road-bastion-export" || ![6, 7].includes(parsed.version ?? -1) || !Array.isArray(parsed.slots)) throw new Error("格式不正确");
       let imported = 0;
       parsed.slots.slice(0, 3).forEach((envelope, slot) => {
-        if (this.isValidSaveEnvelope(envelope) && this.writeEnvelope(slot, envelope)) imported += 1;
+        const migrated = this.normalizeEnvelope(envelope);
+        if (migrated && this.writeEnvelope(slot, migrated)) imported += 1;
       });
       if (imported === 0) throw new Error("无法写入本机存储");
       this.meta = this.loadMeta();
@@ -5262,7 +5439,7 @@ function makeWindWornMound(
       this.refreshTitleUi();
       this.setPrompt("ph-check-circle", "存档已导入，可选择档位继续游戏");
     } catch {
-      this.setPrompt("ph-warning", "导入失败：请选择丝路堡垒 v6 导出文件");
+      this.setPrompt("ph-warning", "导入失败：请选择有效的丝路堡垒 v6 或 v7 存档");
     }
   }
 

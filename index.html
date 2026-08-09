@@ -29,7 +29,7 @@
         </div>
         <div class="menu-deck">
           <div class="deck-heading">
-            <div><span id="modeKicker">守商路，逐夜扩建</span><mark>体验版 v0.6.0</mark></div>
+            <div><span id="modeKicker">守商路，逐夜扩建</span><mark>公开测试 v0.7.0</mark></div>
             <small id="modeDescription">从一座小驿站出发，每 3 夜开辟新的防线。</small>
           </div>
         <div class="start-actions">
@@ -45,7 +45,7 @@
             <button class="mode-btn mode-btn--coming" type="button" disabled aria-label="行者历练，后续开放"><i class="ph ph-sword" aria-hidden="true"></i><span><b>行者历练</b><small>后续开放</small></span></button>
           </div>
           <div id="saveSlots" class="save-slots" aria-label="本地存档位"></div>
-          <div class="save-actions"><button id="exportSaveBtn" type="button"><i class="ph ph-export"></i>导出存档</button><label for="importSaveInput"><i class="ph ph-upload-simple"></i>导入存档</label><input id="importSaveInput" type="file" accept="application/json"></div>
+          <div class="save-actions"><button id="exportSaveBtn" type="button"><i class="ph ph-export"></i>导出存档</button><label for="importSaveInput"><i class="ph ph-upload-simple"></i>导入存档</label><button id="creditsBtn" type="button"><i class="ph ph-seal-check"></i>授权</button><input id="importSaveInput" type="file" accept="application/json"></div>
           <div class="feedback-note">
             <i class="ph ph-chat-circle-dots" aria-hidden="true"></i>
             <span><b>试玩反馈</b><small>请附设备、模式、夜数、问题和截图</small></span>
@@ -174,6 +174,18 @@
         <button id="resumeBtn" type="button">继续</button>
         <button id="returnTitleBtn" type="button">保存并返回</button>
         <button id="replayTutorialBtn" type="button">重看新手引导</button>
+      </section>
+
+      <section id="creditsOverlay" class="credits-overlay is-hidden" aria-modal="true" role="dialog" aria-labelledby="creditsTitle">
+        <div class="credits-sheet">
+          <header><div><small>制作人员与授权</small><h2 id="creditsTitle">原创世界，合法素材</h2></div><button id="creditsCloseBtn" type="button" aria-label="关闭"><i class="ph ph-x"></i></button></header>
+          <div class="credits-grid">
+            <article><i class="ph ph-cube"></i><h3>3D 基础资产</h3><p>Kenney Castle Kit 与 Animated Characters，CC0 1.0。Quaternius Universal Base Characters，CC0 1.0。模型已重新组合、调色并补充程序化材质。</p></article>
+            <article><i class="ph ph-paint-brush"></i><h3>原创内容</h3><p>丝路地貌纹理、封面构图、场景组合、界面、规则、数值与合成音效为本项目原创，不复刻任何参考游戏。</p></article>
+            <article><i class="ph ph-certificate"></i><h3>CC BY 规则</h3><p>后续若采用 CC BY 资产，将逐项记录名称、作者、来源、许可证链接和修改说明。当前运行资产不含 NC、ND、来源不明或含第三方商标的素材。</p></article>
+          </div>
+          <footer><a href="https://creativecommons.org/publicdomain/zero/1.0/" target="_blank" rel="noreferrer">CC0 1.0</a><a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noreferrer">CC BY 4.0</a><button id="creditsDoneBtn" type="button">返回驿站</button></footer>
+        </div>
       </section>
 
       <section id="gameOver" class="game-over is-hidden">

@@ -1,6 +1,7 @@
 import type {
   BuildingDefinition,
   BuildingType,
+  BossKind,
   DirectorContext,
   EnemyDefinition,
   EnemyType,
@@ -15,7 +16,9 @@ import type {
   RngState
 } from "./types";
 
-export const SAVE_KEY = "silk-road-bastion:v6";
+export const SAVE_KEY = "silk-road-bastion:v7";
+export const PREVIOUS_SAVE_KEY = "silk-road-bastion:v6";
+export const ASSET_VERSION = "sr-assets-2026.08-v1";
 
 export const regions: RegionDefinition[] = [
   {
@@ -27,7 +30,9 @@ export const regions: RegionDefinition[] = [
     sky: 0x6f9e9d,
     accent: 0x51a08f,
     perk: "商栈钱币产量提高 25%",
-    threat: ["raider", "looter", "shield"]
+    threat: ["raider", "looter", "archer", "shield"],
+    landmark: "绿洲水渠与驼队营地",
+    weather: "dry"
   },
   {
     id: "canyon",
@@ -38,7 +43,9 @@ export const regions: RegionDefinition[] = [
     sky: 0x9a6b62,
     accent: 0xd36c43,
     perk: "工坊石料产量 +1，城门升级更省石料",
-    threat: ["raider", "sapper", "ram"]
+    threat: ["raider", "sapper", "archer", "ram"],
+    landmark: "风蚀高台与废弃采石场",
+    weather: "wind"
   },
   {
     id: "mist",
@@ -49,7 +56,9 @@ export const regions: RegionDefinition[] = [
     sky: 0x577d83,
     accent: 0x6fa9ac,
     perk: "雾气使来袭敌军移动减慢 12%",
-    threat: ["looter", "flyer", "shield"]
+    threat: ["looter", "archer", "flyer", "shield"],
+    landmark: "断墙旧港与雾中航标",
+    weather: "mist"
   },
   {
     id: "stardust",
@@ -60,7 +69,9 @@ export const regions: RegionDefinition[] = [
     sky: 0x5f667f,
     accent: 0xb68dbd,
     perk: "工坊机巧产量翻倍",
-    threat: ["flyer", "sapper", "ram"]
+    threat: ["flyer", "sapper", "archer", "ram"],
+    landmark: "矿晶带与天文遗迹",
+    weather: "starlight"
   }
 ];
 
@@ -137,7 +148,8 @@ export const enemies: Record<EnemyType, EnemyDefinition> = {
   raider: { type: "raider", name: "沙匪", hp: 42, speed: 3.25, damage: 8, reward: 2, unlockEpoch: 1 },
   shield: { type: "shield", name: "盾卫", hp: 92, speed: 2.2, damage: 10, reward: 4, unlockEpoch: 2 },
   sapper: { type: "sapper", name: "爆破手", hp: 58, speed: 2.95, damage: 22, reward: 5, unlockEpoch: 3 },
-  looter: { type: "looter", name: "游弓手", hp: 52, speed: 3.45, damage: 8, reward: 4, unlockEpoch: 3 },
+  looter: { type: "looter", name: "掠夺者", hp: 56, speed: 3.45, damage: 9, reward: 4, unlockEpoch: 3 },
+  archer: { type: "archer", name: "游弓手", hp: 48, speed: 3.05, damage: 11, reward: 5, unlockEpoch: 4 },
   flyer: { type: "flyer", name: "飞行机关", hp: 66, speed: 4.25, damage: 9, reward: 6, unlockEpoch: 4 },
   ram: { type: "ram", name: "攻城兽", hp: 210, speed: 1.62, damage: 28, reward: 10, unlockEpoch: 5 }
 };
@@ -149,12 +161,12 @@ function stack(effect: string): RelicDefinition["apply"] {
 }
 
 export const relics: RelicDefinition[] = [
-  { id: "silk-contract", name: "丝帛商契", icon: "ph-scroll", text: "商栈每次产币 +1", color: 0xd2a24c, category: "trade", rarity: "common", maxStacks: 5, effect: "trade", apply: stack("trade") },
+  { id: "silk-contract", name: "丝帛商契", icon: "ph-scroll", text: "商栈每次产币 +1", color: 0xd2a24c, category: "trade", rarity: "common", maxStacks: 5, effect: "trade", requiresBuilding: "market", apply: stack("trade") },
   { id: "caravan-bell", name: "驼队铜铃", icon: "ph-bell", text: "击败敌人额外获得 1 钱币", color: 0xc9974f, category: "trade", rarity: "rare", maxStacks: 3, effect: "bounty", apply: stack("bounty") },
-  { id: "jade-ledger", name: "玉印账册", icon: "ph-book-open", text: "商栈订单有概率双倍", color: 0x4b9a76, category: "trade", rarity: "legendary", maxStacks: 1, effect: "double-trade", apply: stack("double-trade") },
-  { id: "artisan-wheel", name: "匠轮", icon: "ph-gear", text: "工坊轮换产量 +1", color: 0x8b735e, category: "production", rarity: "common", maxStacks: 5, effect: "workshop", apply: stack("workshop") },
-  { id: "star-gear", name: "星砂齿轮", icon: "ph-gear-fine", text: "机巧产量翻倍", color: 0x8b72a4, category: "production", rarity: "rare", maxStacks: 3, effect: "gear", apply: stack("gear") },
-  { id: "oasis-cistern", name: "绿洲水契", icon: "ph-drop", text: "生产建筑受损时仍保留半数产量", color: 0x4b8d92, category: "production", rarity: "legendary", maxStacks: 1, effect: "resilient", apply: stack("resilient") },
+  { id: "jade-ledger", name: "玉印账册", icon: "ph-book-open", text: "商栈订单有概率双倍", color: 0x4b9a76, category: "trade", rarity: "legendary", maxStacks: 1, effect: "double-trade", requiresBuilding: "market", apply: stack("double-trade") },
+  { id: "artisan-wheel", name: "匠轮", icon: "ph-gear", text: "工坊轮换产量 +1", color: 0x8b735e, category: "production", rarity: "common", maxStacks: 5, effect: "workshop", requiresBuilding: "workshop", apply: stack("workshop") },
+  { id: "star-gear", name: "星砂齿轮", icon: "ph-gear-fine", text: "机巧产量翻倍", color: 0x8b72a4, category: "production", rarity: "rare", maxStacks: 3, effect: "gear", requiresBuilding: "workshop", apply: stack("gear") },
+  { id: "oasis-cistern", name: "绿洲水契", icon: "ph-drop", text: "生产建筑受损时仍保留半数产量", color: 0x4b8d92, category: "production", rarity: "legendary", maxStacks: 1, effect: "resilient", requiresBuilding: "workshop", apply: stack("resilient") },
   {
     id: "mason-seal",
     name: "石工印",
@@ -174,8 +186,8 @@ export const relics: RelicDefinition[] = [
   { id: "repair-manual", name: "营造残卷", icon: "ph-hammer", text: "每夜结束修复城门 25 点", color: 0x9e8a64, category: "defense", rarity: "rare", maxStacks: 3, effect: "repair", apply: stack("repair") },
   { id: "iron-hinges", name: "玄铁门轴", icon: "ph-shield-chevron", text: "城门受伤降低 12%", color: 0x66747b, category: "defense", rarity: "legendary", maxStacks: 1, effect: "gate-armor", apply: stack("gate-armor") },
   { id: "repeating-bow", name: "连弩机括", icon: "ph-crosshair", text: "防御伤害 +15%", color: 0x4e9186, category: "weapon", rarity: "common", maxStacks: 5, effect: "damage", apply: stack("damage") },
-  { id: "fire-clay", name: "火油陶胆", icon: "ph-fire", text: "火油塔减速延长 0.4 秒", color: 0xc76a3f, category: "weapon", rarity: "rare", maxStacks: 3, effect: "fire", apply: stack("fire") },
-  { id: "piercing-winch", name: "破甲绞盘", icon: "ph-bow-arrow", text: "床弩对盾卫和攻城兽伤害 +35%", color: 0x8b5f42, category: "weapon", rarity: "legendary", maxStacks: 1, effect: "pierce", apply: stack("pierce") },
+  { id: "fire-clay", name: "火油陶胆", icon: "ph-fire", text: "火油塔减速延长 0.4 秒", color: 0xc76a3f, category: "weapon", rarity: "rare", maxStacks: 3, effect: "fire", requiresBuilding: "fire", apply: stack("fire") },
+  { id: "piercing-winch", name: "破甲绞盘", icon: "ph-bow-arrow", text: "床弩对盾卫和攻城兽伤害 +35%", color: 0x8b5f42, category: "weapon", rarity: "legendary", maxStacks: 1, effect: "pierce", requiresBuilding: "ballista", apply: stack("pierce") },
   { id: "wind-boots", name: "逐风靴", icon: "ph-sneaker-move", text: "移动速度 +10%", color: 0x738da3, category: "exploration", rarity: "common", maxStacks: 5, effect: "speed", apply: stack("speed") },
   { id: "survey-map", name: "商路测绘图", icon: "ph-map-trifold", text: "城外采集量 +20%", color: 0x789064, category: "exploration", rarity: "rare", maxStacks: 3, effect: "gather", apply: stack("gather") },
   { id: "moon-compass", name: "月影罗盘", icon: "ph-compass", text: "号角提前 3 秒响起", color: 0x627c9a, category: "exploration", rarity: "legendary", maxStacks: 1, effect: "warning", apply: stack("warning") },
@@ -185,16 +197,16 @@ export const relics: RelicDefinition[] = [
   { id: "range-pins", name: "测距铜钉", icon: "ph-ruler", text: "全部防御射程 +6%", color: 0x73928c, category: "weapon", rarity: "common", maxStacks: 4, effect: "range", apply: stack("range") },
   { id: "camel-winch", name: "驼力绞盘", icon: "ph-arrows-clockwise", text: "防御装填速度 +8%", color: 0xa7794e, category: "weapon", rarity: "common", maxStacks: 4, effect: "rapid", apply: stack("rapid") },
   { id: "salvager-hook", name: "拾荒铁钩", icon: "ph-hook", text: "击败精锐额外获得材料", color: 0x78827c, category: "production", rarity: "rare", maxStacks: 3, effect: "salvage", apply: stack("salvage") },
-  { id: "timber-mark", name: "河西木印", icon: "ph-tree-evergreen", text: "工坊产出木材时额外 +1", color: 0x6f8b5d, category: "production", rarity: "common", maxStacks: 3, effect: "wood-yield", apply: stack("wood-yield") },
-  { id: "quarry-chisel", name: "赤岩石凿", icon: "ph-hammer", text: "工坊产出石料时额外 +1", color: 0x9a6f59, category: "production", rarity: "common", maxStacks: 3, effect: "stone-yield", apply: stack("stone-yield") },
-  { id: "clockwork-oil", name: "机关润油", icon: "ph-drop-half", text: "工坊产出机巧时额外 +1", color: 0x857a9d, category: "production", rarity: "common", maxStacks: 3, effect: "gear-yield", apply: stack("gear-yield") },
+  { id: "timber-mark", name: "河西木印", icon: "ph-tree-evergreen", text: "工坊产出木材时额外 +1", color: 0x6f8b5d, category: "production", rarity: "common", maxStacks: 3, effect: "wood-yield", requiresBuilding: "workshop", apply: stack("wood-yield") },
+  { id: "quarry-chisel", name: "赤岩石凿", icon: "ph-hammer", text: "工坊产出石料时额外 +1", color: 0x9a6f59, category: "production", rarity: "common", maxStacks: 3, effect: "stone-yield", requiresBuilding: "workshop", apply: stack("stone-yield") },
+  { id: "clockwork-oil", name: "机关润油", icon: "ph-drop-half", text: "工坊产出机巧时额外 +1", color: 0x857a9d, category: "production", rarity: "common", maxStacks: 3, effect: "gear-yield", requiresBuilding: "workshop", apply: stack("gear-yield") },
   { id: "field-kitchen", name: "行军炊具", icon: "ph-cooking-pot", text: "白天开始恢复行者 18 生命", color: 0xa8764e, category: "survival", rarity: "common", maxStacks: 3, effect: "day-heal", apply: stack("day-heal") },
   { id: "gate-braces", name: "斜撑门梁", icon: "ph-door", text: "城门受击伤害再降低 5%", color: 0x7f715e, category: "defense", rarity: "common", maxStacks: 4, effect: "gate-brace", apply: stack("gate-brace") },
   { id: "repair-tokens", name: "匠作凭券", icon: "ph-ticket", text: "维修费用 -8%", color: 0xc19956, category: "defense", rarity: "rare", maxStacks: 3, effect: "repair-save", apply: stack("repair-save") },
   { id: "barricade-chain", name: "拒马锁链", icon: "ph-link", text: "拒马耐久与接触伤害 +15%", color: 0x766652, category: "defense", rarity: "rare", maxStacks: 3, effect: "fortify", apply: stack("fortify") },
-  { id: "pitch-pots", name: "连环油罐", icon: "ph-fire-simple", text: "火油命中会灼伤附近敌人", color: 0xb95f3e, category: "weapon", rarity: "legendary", maxStacks: 1, effect: "fire-spread", apply: stack("fire-spread") },
-  { id: "hawk-sight", name: "鹰目照准", icon: "ph-eye", text: "防空弩对飞行机关伤害 +30%", color: 0x668b99, category: "weapon", rarity: "rare", maxStacks: 3, effect: "air-damage", apply: stack("air-damage") },
-  { id: "counterweight", name: "青铜配重", icon: "ph-scales", text: "投石机爆炸范围 +12%", color: 0x917b62, category: "weapon", rarity: "rare", maxStacks: 3, effect: "blast", apply: stack("blast") },
+  { id: "pitch-pots", name: "连环油罐", icon: "ph-fire-simple", text: "火油命中会灼伤附近敌人", color: 0xb95f3e, category: "weapon", rarity: "legendary", maxStacks: 1, effect: "fire-spread", requiresBuilding: "fire", apply: stack("fire-spread") },
+  { id: "hawk-sight", name: "鹰目照准", icon: "ph-eye", text: "防空弩对飞行机关伤害 +30%", color: 0x668b99, category: "weapon", rarity: "rare", maxStacks: 3, effect: "air-damage", requiresBuilding: "antiair", apply: stack("air-damage") },
+  { id: "counterweight", name: "青铜配重", icon: "ph-scales", text: "投石机爆炸范围 +12%", color: 0x917b62, category: "weapon", rarity: "rare", maxStacks: 3, effect: "blast", requiresBuilding: "trebuchet", apply: stack("blast") },
   { id: "escort-pennant", name: "护商令旗", icon: "ph-flag-banner", text: "城外事件奖励 +20%", color: 0xb45343, category: "exploration", rarity: "common", maxStacks: 4, effect: "event-yield", apply: stack("event-yield") },
   { id: "route-cache", name: "暗记补给图", icon: "ph-map-pin", text: "每天额外出现一处近路补给", color: 0x778c66, category: "exploration", rarity: "rare", maxStacks: 2, effect: "field-cache", apply: stack("field-cache") },
   { id: "veteran-grip", name: "百战刀柄", icon: "ph-sword", text: "行者攻击伤害 +20%", color: 0x8e5c45, category: "survival", rarity: "common", maxStacks: 4, effect: "player-damage", apply: stack("player-damage") },
@@ -205,7 +217,28 @@ export const relics: RelicDefinition[] = [
   { id: "supply-gear", name: "机关匣运", icon: "ph-package", text: "立即获得 9 机巧、8 钱币", color: 0x778fa1, category: "production", rarity: "common", maxStacks: 99, effect: "supply", apply: (state) => { state.resources.gear += 9; state.resources.coin += 8; } },
   { id: "supply-repair", name: "紧急工匠队", icon: "ph-hard-hat", text: "修复城门 18%、主帐 10%", color: 0x9b7651, category: "defense", rarity: "common", maxStacks: 99, effect: "supply", apply: (state) => { state.gateHp = Math.min(state.gateMaxHp, state.gateHp + state.gateMaxHp * 0.18); state.coreHp = Math.min(state.coreMaxHp, state.coreHp + state.coreMaxHp * 0.1); } },
   { id: "supply-rations", name: "边军粮秣", icon: "ph-bowl-steam", text: "恢复行者全部生命并获得 10 钱币", color: 0xa66f48, category: "survival", rarity: "common", maxStacks: 99, effect: "supply", apply: (state) => { state.player.hp = state.player.maxHp; state.resources.coin += 10; } },
-  { id: "supply-mixed", name: "驼队杂货", icon: "ph-package", text: "获得少量全部资源", color: 0x779377, category: "production", rarity: "common", maxStacks: 99, effect: "supply", apply: (state) => { state.resources.coin += 14; state.resources.wood += 6; state.resources.stone += 5; state.resources.gear += 4; } }
+  { id: "supply-mixed", name: "驼队杂货", icon: "ph-package", text: "获得少量全部资源", color: 0x779377, category: "production", rarity: "common", maxStacks: 99, effect: "supply", tags: ["supply"], apply: (state) => { state.resources.coin += 14; state.resources.wood += 6; state.resources.stone += 5; state.resources.gear += 4; } },
+  { id: "frontier-deed", name: "边地商契", icon: "ph-handshake", text: "商栈产量 +1，事件奖励 +8%", color: 0xb88d4b, category: "trade", rarity: "common", maxStacks: 5, effect: "trade", tags: ["market", "event"], requiresBuilding: "market", apply: stack("trade") },
+  { id: "weighted-scales", name: "胡商铜秤", icon: "ph-scales", text: "车队站订单暴击率提高", color: 0xc19b55, category: "trade", rarity: "rare", maxStacks: 3, effect: "double-trade", tags: ["market", "caravan"], requiresBuilding: "market", apply: stack("double-trade") },
+  { id: "sealed-coffer", name: "封印钱匣", icon: "ph-treasure-chest", text: "立即获得 42 钱币", color: 0xc69b4f, category: "trade", rarity: "rare", maxStacks: 99, effect: "supply", tags: ["supply"], apply: (state) => { state.resources.coin += 42; } },
+  { id: "sawtooth-blade", name: "锯齿木轮", icon: "ph-gear", text: "伐木工坊额外产出 1 木材", color: 0x668356, category: "production", rarity: "rare", maxStacks: 3, effect: "wood-yield", tags: ["workshop", "wood"], requiresBuilding: "workshop", apply: stack("wood-yield") },
+  { id: "mason-plumb", name: "石匠垂准", icon: "ph-ruler", text: "采石工坊额外产出 1 石料", color: 0x92715b, category: "production", rarity: "rare", maxStacks: 3, effect: "stone-yield", tags: ["workshop", "stone"], requiresBuilding: "workshop", apply: stack("stone-yield") },
+  { id: "copper-spring", name: "回火铜簧", icon: "ph-gear-six", text: "机关作坊额外产出 1 机巧", color: 0x75889a, category: "production", rarity: "rare", maxStacks: 3, effect: "gear-yield", tags: ["workshop", "gear"], requiresBuilding: "workshop", apply: stack("gear-yield") },
+  { id: "granite-keystone", name: "花岗拱心石", icon: "ph-archway", text: "城门上限 +90，升级成本 -5%", color: 0x8e745f, category: "defense", rarity: "rare", maxStacks: 3, effect: "gate", tags: ["gate"], apply: (state) => { state.relics.push("gate"); state.gateMaxHp += 90; state.gateHp += 90; } },
+  { id: "watch-brazier", name: "门楼烽盆", icon: "ph-fire-simple", text: "城门低耐久时防御装填更快", color: 0xb66e42, category: "defense", rarity: "rare", maxStacks: 3, effect: "last-stand", tags: ["gate", "weapon"], apply: stack("last-stand") },
+  { id: "field-sutures", name: "行军缝革", icon: "ph-first-aid", text: "守夜结束恢复行者 20 生命", color: 0x9d7657, category: "survival", rarity: "common", maxStacks: 5, effect: "ration", tags: ["hero"], apply: stack("ration") },
+  { id: "lamellar-plate", name: "札甲内衬", icon: "ph-shield", text: "行者受到的伤害降低 10%", color: 0x66737a, category: "survival", rarity: "rare", maxStacks: 3, effect: "hero-armor", tags: ["hero"], apply: stack("hero-armor") },
+  { id: "horn-bow-limbs", name: "角弓弩臂", icon: "ph-bow-arrow", text: "床弩射程 +8%，伤害 +8%", color: 0x8d6548, category: "weapon", rarity: "rare", maxStacks: 3, effect: "range", tags: ["ballista", "range"], requiresBuilding: "ballista", apply: (state) => { state.relics.push("range", "damage"); } },
+  { id: "barbed-bolts", name: "倒刺重矢", icon: "ph-crosshair", text: "床弩命中远程敌人时伤害 +30%", color: 0x85604d, category: "weapon", rarity: "rare", maxStacks: 3, effect: "anti-ranged", tags: ["ballista", "archer"], requiresBuilding: "ballista", apply: stack("anti-ranged") },
+  { id: "naptha-recipe", name: "石火油方", icon: "ph-flask", text: "火油灼烧伤害提高 25%", color: 0xb85f3f, category: "weapon", rarity: "rare", maxStacks: 3, effect: "fire-damage", tags: ["fire"], requiresBuilding: "fire", apply: stack("fire-damage") },
+  { id: "sky-whistle", name: "猎空鸣镝", icon: "ph-airplane-tilt", text: "防空弩首次命中造成双倍伤害", color: 0x5f8995, category: "weapon", rarity: "legendary", maxStacks: 1, effect: "air-damage", tags: ["antiair", "flyer"], requiresBuilding: "antiair", apply: stack("air-damage") },
+  { id: "engineer-scope", name: "机关测远镜", icon: "ph-binoculars", text: "投石机最远射程 +8", color: 0x718a86, category: "weapon", rarity: "rare", maxStacks: 2, effect: "range", tags: ["trebuchet", "range"], requiresBuilding: "trebuchet", apply: stack("range") },
+  { id: "shrapnel-pot", name: "碎铁震石", icon: "ph-bomb", text: "投石机爆炸伤害 +20%", color: 0x8d745d, category: "weapon", rarity: "legendary", maxStacks: 1, effect: "blast", tags: ["trebuchet", "area"], requiresBuilding: "trebuchet", apply: stack("blast") },
+  { id: "hidden-well", name: "暗渠水井", icon: "ph-drop", text: "每个白天额外恢复主帐 4%", color: 0x4f8790, category: "survival", rarity: "rare", maxStacks: 3, effect: "core-repair", tags: ["core"], apply: stack("core-repair") },
+  { id: "wayfarer-code", name: "行者路引", icon: "ph-signpost", text: "城外事件奖励 +15%", color: 0x718a64, category: "exploration", rarity: "rare", maxStacks: 3, effect: "event-yield", tags: ["event"], apply: stack("event-yield") },
+  { id: "swift-pick", name: "轻柄矿镐", icon: "ph-pickaxe", text: "采集交互更快，采集量 +15%", color: 0x8d765e, category: "exploration", rarity: "common", maxStacks: 4, effect: "gather", tags: ["gather"], apply: stack("gather") },
+  { id: "boss-standard", name: "破阵牙旗", icon: "ph-flag-banner", text: "对首领伤害 +18%", color: 0xa34f42, category: "weapon", rarity: "legendary", maxStacks: 1, effect: "boss-damage", tags: ["boss", "weapon"], apply: stack("boss-damage") },
+  { id: "victory-chest", name: "统领战匣", icon: "ph-package", text: "获得 30 钱币与 10 机巧", color: 0xb89450, category: "production", rarity: "rare", maxStacks: 99, effect: "supply", tags: ["boss", "supply"], apply: (state) => { state.resources.coin += 30; state.resources.gear += 10; } }
 ];
 
 export const nightModifiers: NightModifier[] = [
@@ -266,9 +299,12 @@ export function makeRngState(seed: string): RngState {
 
 export function emptyMeta(): MetaProgress {
   return {
-    version: 6,
+    version: 7,
     renown: 0,
     records: { expedition: 0, survival: 0, training: 0 },
+    prosperityRecords: { expedition: 0, survival: 0 },
+    bossRecords: { expedition: 0, survival: 0 },
+    eventRecords: { expedition: 0, survival: 0 },
     seenTutorial: false,
     unlockedRegions: ["oasis", "canyon", "mist"]
   };
@@ -281,7 +317,7 @@ export function createGame(mode: GameMode, seedInput: string, meta: MetaProgress
   const available = regions.filter((region) => meta.unlockedRegions.includes(region.id));
   const region = streams.pick("region", available);
   return {
-    version: 6,
+    version: 7,
     mode,
     seed,
     rng,
@@ -319,6 +355,14 @@ export function createGame(mode: GameMode, seedInput: string, meta: MetaProgress
     touch: { mode: "idle", pointerId: null },
     terrainVariant: Math.floor(streams.next("world") * 4),
     expansionLevel: 0,
+    regionModule: null,
+    readinessPressure: 0,
+    bossKind: null,
+    bossKills: 0,
+    eventsCompleted: 0,
+    rarePity: 0,
+    qualityTier: "auto",
+    assetVersion: ASSET_VERSION,
     fortifications: [-1, 0, 1].map((lane, index) => ({ id: `fort-${index}`, lane, level: 1, hp: 160, maxHp: 160, built: false })),
     adventure: mode === "training" ? {
       hero,
@@ -364,7 +408,7 @@ export function directorWave(context: DirectorContext, region: RegionDefinition,
   const pool = region.threat.filter((type) => enemies[type].unlockEpoch <= context.epoch);
   const universal = (Object.keys(enemies) as EnemyType[]).filter((type) => enemies[type].unlockEpoch <= context.epoch);
   const choices = [...new Set([...pool, ...universal])];
-  const costs: Record<EnemyType, number> = { raider: 1, shield: 2.5, sapper: 2.3, looter: 1.8, flyer: 2.8, ram: 5.5 };
+  const costs: Record<EnemyType, number> = { raider: 1, shield: 2.5, sapper: 2.3, looter: 1.8, archer: 2.1, flyer: 2.8, ram: 5.5 };
   const wave: EnemyType[] = [];
   let spent = 0;
   const cap = Math.min(56, 14 + context.epoch * 2);
@@ -375,9 +419,25 @@ export function directorWave(context: DirectorContext, region: RegionDefinition,
     spent += costs[type];
   }
   if (context.epoch >= 3 && !wave.includes("sapper")) wave.push("sapper");
+  if (context.epoch >= 4 && !wave.includes("archer")) wave.push("archer");
   if (context.epoch >= 4 && !wave.includes("flyer") && streams.next("combat") > 0.45) wave.push("flyer");
   if (context.epoch >= 5 && context.gateLevel >= 2 && !wave.includes("ram")) wave.push("ram");
   return streams.shuffle("combat", wave);
+}
+
+const bosses: BossKind[] = ["shield-commander", "sapper-captain", "kite-swarm", "siege-beast"];
+
+export function bossForNight(epoch: number, region: RegionDefinition): BossKind | null {
+  if (epoch < 5 || epoch % 5 !== 0) return null;
+  const regionalOffset = regions.findIndex((entry) => entry.id === region.id);
+  return bosses[(Math.floor(epoch / 5) - 1 + Math.max(0, regionalOffset)) % bosses.length]!;
+}
+
+export function bossEnemyType(kind: BossKind): EnemyType {
+  return kind === "shield-commander" ? "shield"
+    : kind === "sapper-captain" ? "sapper"
+      : kind === "kite-swarm" ? "flyer"
+        : "ram";
 }
 
 /** 无上限生命曲线。前 3 夜保留教学余量，第 9 夜起迫使玩家依靠克制、布局与操作。 */

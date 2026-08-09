@@ -1,4 +1,4 @@
-import { buildings, canAfford, createGame, directorWave, emptyMeta, enemyHealthScale, pay, regionById, relics, SeedStreams } from "../src/data";
+import { bossForNight, buildings, canAfford, createGame, directorWave, emptyMeta, enemies, enemyHealthScale, pay, regionById, relics, SeedStreams } from "../src/data";
 
 const seeds = Array.from({ length: 100 }, (_, index) => `SILK-${String(index + 1).padStart(3, "0")}`);
 let generatedEpochs = 0;
@@ -39,14 +39,31 @@ if (survival.mode !== "survival" || training.adventure?.attackRange !== 11.5 || 
   throw new Error("模式或行者初始属性不正确");
 }
 
-if (relics.length < 36) throw new Error(`奖励池不足：当前只有 ${relics.length} 项`);
+if (relics.length < 60) throw new Error(`奖励池不足：当前只有 ${relics.length} 项`);
+const buildingSpecificEffects = new Map([
+  ["trade", "market"], ["double-trade", "market"], ["workshop", "workshop"], ["gear", "workshop"],
+  ["wood-yield", "workshop"], ["stone-yield", "workshop"], ["gear-yield", "workshop"],
+  ["fire", "fire"], ["fire-spread", "fire"], ["fire-damage", "fire"], ["pierce", "ballista"],
+  ["anti-ranged", "ballista"], ["air-damage", "antiair"], ["blast", "trebuchet"]
+]);
+for (const relic of relics) {
+  const required = buildingSpecificEffects.get(relic.effect);
+  if (required && relic.requiresBuilding !== required) throw new Error(`专属奖励 ${relic.name} 未绑定 ${required}，可能在无效时出现`);
+}
+const padPositions = [[-5.5, -5.2], [5.5, -5.2], [-12, -3], [12, -3], [-11, 4.2], [11, 4.2], [-6.5, 9.5], [6.5, 9.5], [-11.5, 14.2], [11.5, 14.2], [-7.2, 22.2], [7.2, 22.2]];
+for (const [x, z] of padPositions) {
+  const relay = Math.min(16, Math.max(0, z - 4) * 0.88);
+  const range = buildings.ballista.range! + relay;
+  const nearestLane = Math.min(...[-3.2, 0, 3.2].map((lane) => Math.hypot(x - lane, z + 17.5)));
+  if (nearestLane > range) throw new Error(`扩建石台 (${x},${z}) 存在床弩射程死区`);
+}
 if (enemyHealthScale(30, "expedition") <= enemyHealthScale(15, "expedition") * 1.35) throw new Error("敌军生命后期增长过缓或意外封顶");
 if (enemyHealthScale(15, "survival") <= enemyHealthScale(15, "expedition")) throw new Error("极限守城没有形成额外生命压力");
 
 for (const seed of seeds) {
   const state = createGame("expedition", seed, emptyMeta());
   const streams = new SeedStreams(state.rng);
-  for (let epoch = 1; epoch <= 30; epoch += 1) {
+  for (let epoch = 1; epoch <= 50; epoch += 1) {
     state.epoch = epoch;
     const wave = directorWave(
       {
@@ -61,7 +78,9 @@ for (const seed of seeds) {
       streams
     );
     if (!wave.length) throw new Error(`${seed} 的第 ${epoch} 纪元没有生成敌人`);
-    if (wave.length > 56) throw new Error(`${seed} 的第 ${epoch} 纪元敌人超过性能上限`);
+    if (wave.length > 60) throw new Error(`${seed} 的第 ${epoch} 纪元敌人超过性能上限`);
+    if (epoch >= 4 && !wave.includes("archer")) throw new Error(`${seed} 的第 ${epoch} 夜缺少远程兵种压力`);
+    if ((epoch % 5 === 0) !== Boolean(bossForNight(epoch, regionById(state.regionId)))) throw new Error(`${seed} 的首领轮换错误`);
     maxWave = Math.max(maxWave, wave.length);
     if (wave.some((type) => type !== "raider") && mechanicEpoch === 0) mechanicEpoch = epoch;
     if (epoch <= 3) totalEarlyEnemies += wave.length;
@@ -70,8 +89,14 @@ for (const seed of seeds) {
   }
 }
 
-if (generatedEpochs !== 3000) throw new Error(`纪元数量错误: ${generatedEpochs}`);
+if (generatedEpochs !== 5000) throw new Error(`纪元数量错误: ${generatedEpochs}`);
 if (mechanicEpoch > 3) throw new Error("敌军机制解锁过晚");
 if (totalLateEnemies <= totalEarlyEnemies) throw new Error("后期敌军组合没有形成进程性");
 
-console.log(`模拟通过：100 个种子、${generatedEpochs} 个纪元，${openingRegions.size} 种首区域、${openingTerrains.size} 种地貌变体，最大波次 ${maxWave}，机制敌人自第 ${mechanicEpoch} 纪元出现。`);
+const gateLevelTenMax = 260 + Array.from({ length: 9 }, (_, index) => 72 + Math.min(150, (index + 2) * 14)).reduce((sum, value) => sum + value, 0);
+const pressureWave = directorWave({ epoch: 20, prosperity: 28, gateLevel: 10, defensePower: 150, recentDamage: 20, mode: "expedition" }, regionById("canyon"), new SeedStreams(createGame("expedition", "GATE-PRESSURE", emptyMeta()).rng));
+const nightTwentyScale = 1 + 0.052 * 19 + 0.0045 * Math.pow(19, 1.35);
+const threeAttackDamage = pressureWave.reduce((sum, type) => sum + enemies[type].damage * nightTwentyScale * (type === "sapper" ? 1.55 : type === "archer" ? 0.78 : 1), 0) * 3;
+if (threeAttackDamage <= gateLevelTenMax) throw new Error("十级城门仍可在高夜无视整波敌军，防守压力不足");
+
+console.log(`模拟通过：100 个种子、${generatedEpochs} 个纪元，${relics.length} 项奖励，${openingRegions.size} 种首区域、${openingTerrains.size} 种地貌变体，最大波次 ${maxWave}，机制敌人自第 ${mechanicEpoch} 纪元出现。`);

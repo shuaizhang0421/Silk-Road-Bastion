@@ -85,6 +85,12 @@ async function boot(): Promise<void> {
       if (file) await game.importSaves(file);
       input.value = "";
     });
+    const credits = document.querySelector<HTMLElement>("#creditsOverlay")!;
+    const showCredits = () => credits.classList.remove("is-hidden");
+    const hideCredits = () => credits.classList.add("is-hidden");
+    document.querySelector("#creditsBtn")?.addEventListener("click", showCredits);
+    document.querySelector("#creditsCloseBtn")?.addEventListener("click", hideCredits);
+    document.querySelector("#creditsDoneBtn")?.addEventListener("click", hideCredits);
   } catch (error) {
     const message = error instanceof Error ? error.message : "未知资源加载错误";
     console.error(error);

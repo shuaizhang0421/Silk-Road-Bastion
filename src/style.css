@@ -1029,3 +1029,21 @@ button:focus-visible, input:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+/* Credits use one dark historical-material theme; the game scene remains visible behind it. */
+.credits-overlay { position: fixed; inset: 0; z-index: 24; display: grid; place-items: center; padding: max(18px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(18px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); background: rgba(8, 19, 20, .76); backdrop-filter: blur(12px); }
+.credits-sheet { width: min(760px, 100%); max-height: min(720px, 92dvh); overflow: auto; color: #e9e2cf; border: 1px solid rgba(207, 177, 112, .34); border-radius: 18px; background: linear-gradient(145deg, rgba(21, 48, 47, .98), rgba(10, 28, 29, .98)); box-shadow: 0 28px 80px rgba(0, 0, 0, .42), inset 0 1px rgba(255, 255, 255, .06); }
+.credits-sheet header { display: flex; align-items: flex-start; justify-content: space-between; padding: 26px 28px 16px; }
+.credits-sheet header small { color: #d6ad59; font-size: 12px; letter-spacing: .08em; }
+.credits-sheet h2 { margin: 5px 0 0; font-size: clamp(24px, 4vw, 36px); font-weight: 760; }
+.credits-sheet header button { width: 42px; height: 42px; border: 1px solid rgba(231, 219, 188, .2); border-radius: 11px; color: inherit; background: rgba(255, 255, 255, .04); }
+.credits-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 12px; padding: 0 28px 24px; }
+.credits-grid article { min-height: 170px; padding: 20px; border: 1px solid rgba(231, 219, 188, .12); border-radius: 14px; background: rgba(7, 23, 24, .5); }
+.credits-grid article:first-child { grid-row: span 2; }
+.credits-grid article > i { color: #d6ad59; font-size: 28px; }
+.credits-grid h3 { margin: 20px 0 8px; font-size: 16px; }
+.credits-grid p { margin: 0; color: #c5c1b4; font-size: 13px; line-height: 1.72; }
+.credits-sheet footer { display: flex; align-items: center; gap: 18px; padding: 16px 28px 24px; border-top: 1px solid rgba(231, 219, 188, .1); }
+.credits-sheet footer a { color: #b8cfc8; font-size: 12px; }
+.credits-sheet footer button { margin-left: auto; padding: 11px 18px; border: 0; border-radius: 10px; color: #162523; background: #dbae53; font-weight: 750; }
+@media (max-width: 620px) { .credits-sheet header { padding: 20px 18px 12px; } .credits-grid { grid-template-columns: 1fr; padding: 0 18px 18px; } .credits-grid article:first-child { grid-row: auto; } .credits-grid article { min-height: 0; } .credits-sheet footer { padding: 14px 18px 20px; flex-wrap: wrap; } .credits-sheet footer button { width: 100%; margin-left: 0; } }
+@media (prefers-reduced-transparency: reduce) { .credits-overlay { backdrop-filter: none; background: #102527; } }

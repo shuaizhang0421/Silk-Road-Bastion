@@ -3,11 +3,14 @@ export type GamePhase = "day" | "night" | "clear" | "relic" | "route" | "adventu
 export type HeroClass = "guardian" | "ranger" | "artificer";
 export type AdventureRoomKind = "camp" | "caravan" | "ruin" | "elite" | "boss";
 export type BuildingType = "ballista" | "fire" | "market" | "workshop" | "antiair" | "trebuchet";
-export type EnemyType = "raider" | "shield" | "sapper" | "looter" | "flyer" | "ram";
+export type EnemyType = "raider" | "shield" | "sapper" | "looter" | "archer" | "flyer" | "ram";
 export type ResourceKey = "coin" | "wood" | "stone" | "gear";
 export type EnemyTargetType = "gate" | "core" | "building" | "player";
 export type RelicCategory = "trade" | "production" | "defense" | "weapon" | "exploration" | "survival";
 export type RelicRarity = "common" | "rare" | "legendary";
+export type BossKind = "shield-commander" | "sapper-captain" | "kite-swarm" | "siege-beast";
+export type RegionModule = "high-ground" | "side-gate" | "caravan-yard" | "mechanism-emplacement";
+export type QualityTier = "auto" | "low" | "medium" | "high";
 
 export interface Vec2 {
   x: number;
@@ -78,6 +81,10 @@ export interface EnemyState {
   collisionRadius: number;
   attackSlot: number;
   heightLayer: 0 | 1;
+  bossKind: BossKind | null;
+  bossPhase: 0 | 1 | 2;
+  attackRange: number;
+  windupUntil: number;
 }
 
 export interface FortificationState {
@@ -129,7 +136,7 @@ export interface NightModifier {
 
 export interface FieldObjective {
   id: string;
-  type: "ruin" | "caravan" | "scout" | "repair" | "cache" | "aid";
+  type: "mine" | "ruin" | "caravan" | "elite" | "artisan" | "aid" | "scout" | "repair" | "cache";
   position: Vec2;
   completed: boolean;
   reward: Partial<Resources>;
@@ -164,6 +171,8 @@ export interface RegionDefinition {
   accent: number;
   perk: string;
   threat: EnemyType[];
+  landmark: string;
+  weather: "dry" | "wind" | "mist" | "starlight";
 }
 
 export interface BuildingDefinition {
@@ -190,7 +199,7 @@ export interface EnemyDefinition {
 }
 
 export interface GameState {
-  version: 6;
+  version: 7;
   mode: GameMode;
   seed: string;
   rng: RngState;
@@ -229,21 +238,32 @@ export interface GameState {
   touch: TouchGestureState;
   terrainVariant: number;
   expansionLevel: number;
+  regionModule: RegionModule | null;
+  readinessPressure: number;
+  bossKind: BossKind | null;
+  bossKills: number;
+  eventsCompleted: number;
+  rarePity: number;
+  qualityTier: QualityTier;
+  assetVersion: string;
   fortifications: FortificationState[];
   adventure: AdventureState | null;
 }
 
 export interface MetaProgress {
-  version: 6;
+  version: 7;
   renown: number;
   records: Record<GameMode, number>;
+  prosperityRecords: Record<"expedition" | "survival", number>;
+  bossRecords: Record<"expedition" | "survival", number>;
+  eventRecords: Record<"expedition" | "survival", number>;
   seenTutorial: boolean;
   unlockedRegions: string[];
 }
 
 export interface SaveEnvelope {
   schema: "silk-road-bastion";
-  version: 6;
+  version: 7;
   savedAt: number;
   run: GameState | null;
   meta: MetaProgress;
@@ -267,5 +287,7 @@ export interface RelicDefinition {
   rarity: RelicRarity;
   maxStacks: number;
   effect: string;
+  tags?: string[];
+  requiresBuilding?: BuildingType;
   apply: (state: GameState) => void;
 }

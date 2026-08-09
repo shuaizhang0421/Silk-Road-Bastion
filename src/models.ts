@@ -218,7 +218,8 @@ export class AssetLibrary {
     const woodSurfaceJob = this.textureLoader.loadAsync("./assets/art/silk-road-timber-v1.jpg");
     const courtyardPavingJob = this.textureLoader.loadAsync("./assets/art/silk-road-courtyard-paving-v1.jpg");
     const caravanRoadJob = this.textureLoader.loadAsync("./assets/art/silk-road-caravan-road-v1.jpg");
-    const [character, idle, run, ranger, raider, brute, stoneSurface, woodSurface, courtyardPaving, caravanRoad] = await Promise.all([
+    const regionGroundJobs = ["oasis", "canyon", "mist", "stardust"].map((region) => this.textureLoader.loadAsync(`./assets/art/region-${region}-ground-v1.jpg`));
+    const [character, idle, run, ranger, raider, brute, stoneSurface, woodSurface, courtyardPaving, caravanRoad, oasisGround, canyonGround, mistGround, stardustGround] = await Promise.all([
       this.fbx.loadAsync(`${ASSET_ROOT}/characters/model/characterMedium.fbx`),
       this.fbx.loadAsync(`${ASSET_ROOT}/characters/animations/idle.fbx`),
       this.fbx.loadAsync(`${ASSET_ROOT}/characters/animations/run.fbx`),
@@ -229,6 +230,7 @@ export class AssetLibrary {
       woodSurfaceJob,
       courtyardPavingJob,
       caravanRoadJob,
+      ...regionGroundJobs,
       ...glbJobs
     ]);
 
@@ -258,6 +260,14 @@ export class AssetLibrary {
     caravanRoad.wrapT = THREE.RepeatWrapping;
     caravanRoad.repeat.set(1.18, 5.6);
     this.worldTextures.set("caravan-road", caravanRoad);
+    (["oasis", "canyon", "mist", "stardust"] as const).forEach((region, index) => {
+      const texture = [oasisGround, canyonGround, mistGround, stardustGround][index]!;
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.RepeatWrapping;
+      texture.repeat.set(4.2, 3.7);
+      this.worldTextures.set(`region-${region}`, texture);
+    });
     const hero = await heroJob;
     hero.scene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
@@ -896,5 +906,6 @@ export function makePedestal(color: number, iconType: "relic" | "route"): THREE.
 
 export function enemyCharacterKind(type: EnemyType): CharacterKind {
   if (type === "ram") return "brute";
+  if (type === "archer") return "ranger";
   return type === "shield" || type === "sapper" ? "brute" : "raider";
 }

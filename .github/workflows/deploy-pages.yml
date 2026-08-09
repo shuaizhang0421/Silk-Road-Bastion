@@ -33,6 +33,8 @@ jobs:
         run: pnpm test:assets
       - name: Simulate endless balance
         run: pnpm test:sim
+      - name: Test save migration
+        run: pnpm test:save
       - name: Build static game
         run: pnpm build
       - name: Configure GitHub Pages

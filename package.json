@@ -1,13 +1,14 @@
 {
   "name": "silk-road-bastion-3d",
   "private": true,
-  "version": "0.6.0-playtest",
+  "version": "0.7.0-playtest",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:sim": "tsx scripts/simulate.ts",
+    "test:save": "tsx scripts/test-save-migration.ts",
     "test:assets": "node scripts/audit-assets.mjs"
   },
   "dependencies": {
