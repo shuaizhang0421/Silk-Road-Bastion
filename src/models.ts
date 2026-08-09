@@ -300,6 +300,8 @@ export class AssetLibrary {
         for (const material of materials) {
           if (!(material instanceof THREE.MeshStandardMaterial)) continue;
           material.map = surfaceMaps[surface]!;
+          material.bumpMap = surfaceMaps[surface]!;
+          material.bumpScale = surface === "stone" ? 0.14 : 0.085;
           material.color.lerp(new THREE.Color(0xffffff), surface === "stone" ? 0.56 : 0.42);
           material.roughness = surface === "stone" ? 0.88 : 0.78;
           material.needsUpdate = true;
@@ -504,7 +506,12 @@ export class AssetLibrary {
 function material(color: number, roughness = 0.84, metalness = 0.04, surface?: MaterialSurface): THREE.MeshStandardMaterial {
   const map = surface ? surfaceMaps[surface] : undefined;
   const materialColor = map ? new THREE.Color(color).lerp(new THREE.Color(0xffffff), surface === "stone" ? 0.58 : 0.48) : new THREE.Color(color);
-  return new THREE.MeshStandardMaterial({ color: materialColor, map, roughness, metalness });
+  return new THREE.MeshStandardMaterial({
+    color: materialColor,
+    roughness,
+    metalness,
+    ...(map ? { map, bumpMap: map, bumpScale: surface === "stone" ? 0.14 : 0.085 } : {})
+  });
 }
 
 function mesh(

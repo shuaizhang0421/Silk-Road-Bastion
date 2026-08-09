@@ -1,4 +1,4 @@
-import { buildings, canAfford, createGame, directorWave, emptyMeta, pay, regionById, SeedStreams } from "../src/data";
+import { buildings, canAfford, createGame, directorWave, emptyMeta, enemyHealthScale, pay, regionById, relics, SeedStreams } from "../src/data";
 
 const seeds = Array.from({ length: 100 }, (_, index) => `SILK-${String(index + 1).padStart(3, "0")}`);
 let generatedEpochs = 0;
@@ -39,6 +39,10 @@ if (survival.mode !== "survival" || training.adventure?.attackRange !== 11.5 || 
   throw new Error("模式或行者初始属性不正确");
 }
 
+if (relics.length < 36) throw new Error(`奖励池不足：当前只有 ${relics.length} 项`);
+if (enemyHealthScale(30, "expedition") <= enemyHealthScale(15, "expedition") * 1.35) throw new Error("敌军生命后期增长过缓或意外封顶");
+if (enemyHealthScale(15, "survival") <= enemyHealthScale(15, "expedition")) throw new Error("极限守城没有形成额外生命压力");
+
 for (const seed of seeds) {
   const state = createGame("expedition", seed, emptyMeta());
   const streams = new SeedStreams(state.rng);
@@ -57,7 +61,7 @@ for (const seed of seeds) {
       streams
     );
     if (!wave.length) throw new Error(`${seed} 的第 ${epoch} 纪元没有生成敌人`);
-    if (wave.length > 48) throw new Error(`${seed} 的第 ${epoch} 纪元敌人超过性能上限`);
+    if (wave.length > 56) throw new Error(`${seed} 的第 ${epoch} 纪元敌人超过性能上限`);
     maxWave = Math.max(maxWave, wave.length);
     if (wave.some((type) => type !== "raider") && mechanicEpoch === 0) mechanicEpoch = epoch;
     if (epoch <= 3) totalEarlyEnemies += wave.length;

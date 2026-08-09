@@ -87,6 +87,7 @@ export interface FortificationState {
   hp: number;
   maxHp: number;
   built: boolean;
+  branch?: "spike" | "sand" | "oil";
 }
 
 export interface PlayerState {
@@ -122,6 +123,8 @@ export interface NightModifier {
   enemyDamage: number;
   loot: number;
   production: number;
+  description: string;
+  repairDiscount?: number;
 }
 
 export interface FieldObjective {
@@ -187,7 +190,7 @@ export interface EnemyDefinition {
 }
 
 export interface GameState {
-  version: 5;
+  version: 6;
   mode: GameMode;
   seed: string;
   rng: RngState;
@@ -231,7 +234,7 @@ export interface GameState {
 }
 
 export interface MetaProgress {
-  version: 5;
+  version: 6;
   renown: number;
   records: Record<GameMode, number>;
   seenTutorial: boolean;
@@ -240,7 +243,7 @@ export interface MetaProgress {
 
 export interface SaveEnvelope {
   schema: "silk-road-bastion";
-  version: 5;
+  version: 6;
   savedAt: number;
   run: GameState | null;
   meta: MetaProgress;

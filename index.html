@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#182f32" />
-    <meta name="description" content="丝路堡垒，真 3D 单机无尽守城游戏。" />
+    <meta name="description" content="丝路堡垒体验版，真 3D 单机无尽守城游戏。" />
     <link rel="icon" type="image/png" sizes="512x512" href="./assets/icon/silk-road-bastion-icon-512.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="./assets/icon/apple-touch-icon.png" />
     <link rel="manifest" href="./site.webmanifest" />
@@ -28,7 +28,10 @@
           <span>筑驿站，守商路，或踏上行者历练</span>
         </div>
         <div class="menu-deck">
-          <div class="deck-heading"><span id="modeKicker">守商路，逐夜扩建</span><small id="modeDescription">从一座小驿站出发，每 3 夜开辟新的防线。</small></div>
+          <div class="deck-heading">
+            <div><span id="modeKicker">守商路，逐夜扩建</span><mark>体验版 v0.6.0</mark></div>
+            <small id="modeDescription">从一座小驿站出发，每 3 夜开辟新的防线。</small>
+          </div>
         <div class="start-actions">
           <button id="newGameBtn" class="start-primary" type="button">
             <i class="ph ph-compass"></i><span>新建随机世界</span>
@@ -43,6 +46,11 @@
           </div>
           <div id="saveSlots" class="save-slots" aria-label="本地存档位"></div>
           <div class="save-actions"><button id="exportSaveBtn" type="button"><i class="ph ph-export"></i>导出存档</button><label for="importSaveInput"><i class="ph ph-upload-simple"></i>导入存档</label><input id="importSaveInput" type="file" accept="application/json"></div>
+          <div class="feedback-note">
+            <i class="ph ph-chat-circle-dots" aria-hidden="true"></i>
+            <span><b>试玩反馈</b><small>请附设备、模式、夜数、问题和截图</small></span>
+            <a href="https://github.com/shuaizhang0421/Silk-Road-Bastion/issues/new?template=playtest-feedback.yml" target="_blank" rel="noreferrer">填写反馈</a>
+          </div>
         </div>
         </div>
         <div class="records" id="records"></div>

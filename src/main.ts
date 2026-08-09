@@ -1,7 +1,5 @@
 import "./style.css";
 import phosphorFontUrl from "@phosphor-icons/web/regular/Phosphor.woff2?url";
-import { SilkRoadGame } from "./game";
-import { AssetLibrary } from "./models";
 import type { GameMode } from "./types";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#gameCanvas")!;
@@ -28,6 +26,14 @@ async function boot(): Promise<void> {
     showFatal("当前浏览器或显卡未启用 WebGL 2。请更新浏览器并开启硬件加速。");
     return;
   }
+
+  // 先让加载界面完成首帧，再异步获取 Three.js、游戏逻辑和模型加载器。
+  // 这样静态首页壳不会被大型 3D 运行时阻塞，音频仍只会在玩家首次操作后创建。
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  const [{ SilkRoadGame }, { AssetLibrary }] = await Promise.all([
+    import("./game"),
+    import("./models")
+  ]);
 
   const library = new AssetLibrary((loaded, total) => {
     const ratio = total > 0 ? loaded / total : 0.08;

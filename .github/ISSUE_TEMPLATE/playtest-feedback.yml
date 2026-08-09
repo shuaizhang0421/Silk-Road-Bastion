@@ -1,0 +1,49 @@
+name: 丝路堡垒试玩反馈
+description: 反馈体验版中的操作、平衡、画面、性能或存档问题
+title: "[试玩反馈] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢试玩。请不要上传包含账号、路径或其他隐私信息的截图。
+  - type: dropdown
+    id: device
+    attributes:
+      label: 设备
+      options:
+        - Mac 或 Windows 桌面浏览器
+        - iPhone
+        - iPad
+        - 安卓手机或平板
+        - 其他设备
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 游戏模式
+      options:
+        - 无尽远征
+        - 极限守城
+        - 首页、存档或通用界面
+    validations:
+      required: true
+  - type: input
+    id: epoch
+    attributes:
+      label: 出现问题时的夜数
+      placeholder: 例如：第 6 夜；不适用可填写“无”
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 问题与复现步骤
+      description: 请说明做了什么、发生了什么，以及你原本期待的结果。
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: 截图或补充信息
+      description: 可以直接拖入截图，也可以补充浏览器版本和世界编号。
