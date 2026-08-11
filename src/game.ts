@@ -209,6 +209,7 @@ interface OccluderMesh {
   mesh: THREE.Mesh;
   materials: THREE.Material[];
   opacities: number[];
+  groupKey: string;
 }
 
 interface AdventureReward {
@@ -237,9 +238,12 @@ class Soundscape {
   private effectsGain?: GainNode;
   private ambienceGain?: GainNode;
   private ambience?: AudioBufferSourceNode;
-  private musicMode: "calm" | "danger" | "choice" = "calm";
+  private musicMode: "calm" | "danger" | "boss" | "choice" = "calm";
   private musicCooldown = 0;
   private musicStep = 0;
+  private ambienceCooldown = 0;
+  private intensity = 0;
+  private lowDynamics = false;
   muted = false;
 
   ensure(): void {
@@ -271,12 +275,17 @@ class Soundscape {
     }
   }
 
-  setLevels(music: number, effects: number): void {
+  setLevels(music: number, effects: number, ambience = music * 0.82): void {
     this.ensure();
     if (!this.context) return;
     this.musicGain?.gain.setTargetAtTime(THREE.MathUtils.clamp(music, 0, 1), this.context.currentTime, 0.035);
     this.effectsGain?.gain.setTargetAtTime(THREE.MathUtils.clamp(effects, 0, 1), this.context.currentTime, 0.035);
-    this.ambienceGain?.gain.setTargetAtTime(THREE.MathUtils.clamp(music * 0.82, 0, 1), this.context.currentTime, 0.035);
+    this.ambienceGain?.gain.setTargetAtTime(THREE.MathUtils.clamp(ambience, 0, 1), this.context.currentTime, 0.035);
+  }
+
+  setLowDynamics(value: boolean): void {
+    this.lowDynamics = value;
+    if (this.master && this.context) this.master.gain.setTargetAtTime(this.muted ? 0 : value ? 0.68 : 0.82, this.context.currentTime, 0.08);
   }
 
   private startAmbience(): void {
@@ -319,6 +328,27 @@ class Soundscape {
     source.start();
   }
 
+  private ambienceNoise(duration: number, volume: number, cutoff: number): void {
+    if (this.muted) return;
+    this.ensure();
+    if (!this.context || !this.ambienceGain) return;
+    const length = Math.max(1, Math.floor(this.context.sampleRate * duration));
+    const buffer = this.context.createBuffer(1, length, this.context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let index = 0; index < length; index += 1) data[index] = (Math.random() * 2 - 1) * (0.72 + Math.sin(index / 1900) * 0.18);
+    const source = this.context.createBufferSource();
+    const filter = this.context.createBiquadFilter();
+    const gain = this.context.createGain();
+    source.buffer = buffer;
+    filter.type = "lowpass";
+    filter.frequency.value = cutoff;
+    gain.gain.setValueAtTime(0.0001, this.context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(volume, this.context.currentTime + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, this.context.currentTime + duration);
+    source.connect(filter).connect(gain).connect(this.ambienceGain);
+    source.start();
+  }
+
   private note(frequency: number, duration: number, volume: number, type: OscillatorType = "triangle"): void {
     if (this.muted || !this.context || !this.musicGain) return;
     const now = this.context.currentTime;
@@ -344,24 +374,43 @@ class Soundscape {
     harmonic.stop(now + duration);
   }
 
-  updateMusic(phase: GameState["phase"], delta: number): void {
+  updateMusic(phase: GameState["phase"], delta: number, regionId: string, pressure: number, bossActive: boolean): void {
     if (!this.context || this.context.state !== "running" || this.muted) return;
-    const nextMode = phase === "night" ? "danger" : phase === "relic" || phase === "route" || phase === "clear" ? "choice" : "calm";
+    const nextMode = bossActive ? "boss" : phase === "night" ? "danger" : phase === "relic" || phase === "route" || phase === "clear" ? "choice" : "calm";
     if (nextMode !== this.musicMode) {
       this.musicMode = nextMode;
       this.musicStep = 0;
       this.musicCooldown = 0;
     }
+    this.intensity = THREE.MathUtils.lerp(this.intensity, THREE.MathUtils.clamp(pressure, 0, 1), Math.min(1, delta * 1.8));
+    this.ambienceCooldown -= delta;
+    if (this.ambienceCooldown <= 0) {
+      const ambience = regionId === "mist" ? [0.8, 0.012, 720] : regionId === "canyon" ? [0.55, 0.011, 360] : regionId === "stardust" ? [0.7, 0.009, 1250] : [0.65, 0.01, 560];
+      this.ambienceNoise(ambience[0]!, ambience[1]!, ambience[2]!);
+      this.ambienceCooldown = regionId === "mist" ? 2.4 : 3.2;
+    }
     this.musicCooldown -= delta;
     if (this.musicCooldown > 0) return;
 
-    if (this.musicMode === "danger") {
-      const pulse = [110, 165, 147, 196, 123, 165, 147, 220];
+    const profiles: Record<string, { notes: number[]; drone: number; timbre: OscillatorType }> = {
+      oasis: { notes: [220, 247, 277, 330, 370, 440], drone: 110, timbre: "triangle" },
+      canyon: { notes: [147, 165, 196, 220, 247, 294], drone: 73.5, timbre: "sawtooth" },
+      mist: { notes: [196, 233, 262, 311, 349, 392], drone: 98, timbre: "sine" },
+      stardust: { notes: [185, 220, 277, 330, 415, 494], drone: 92.5, timbre: "triangle" }
+    };
+    const profile = profiles[regionId] ?? profiles.oasis!;
+    if (this.musicMode === "boss") {
+      const note = profile.notes[(this.musicStep * 2) % profile.notes.length]!;
+      this.note(note * 0.5, 0.38, this.lowDynamics ? 0.012 : 0.022, profile.timbre);
+      if (this.musicStep % 2 === 0) this.noise(0.15, this.lowDynamics ? 0.012 : 0.022, 260);
+      this.musicCooldown = 0.38;
+    } else if (this.musicMode === "danger") {
+      const pulse = profile.notes;
       const note = pulse[this.musicStep % pulse.length]!;
-      this.note(note, 0.32, this.musicStep % 2 === 0 ? 0.018 : 0.011, "triangle");
+      this.note(note, 0.32, (this.musicStep % 2 === 0 ? 0.013 : 0.009) + this.intensity * 0.008, profile.timbre);
       if (this.musicStep % 4 === 0) {
-        this.noise(0.11, 0.014, 240);
-        this.tone(66, 0.16, "sine", 0.018);
+        this.noise(0.11, 0.01 + this.intensity * 0.008, 240);
+        this.tone(profile.drone * 0.6, 0.16, "sine", 0.014);
       }
       this.musicCooldown = 0.46;
     } else if (this.musicMode === "choice") {
@@ -369,10 +418,10 @@ class Soundscape {
       this.note(choiceNotes[this.musicStep % choiceNotes.length]!, 0.85, 0.016);
       this.musicCooldown = 0.92;
     } else {
-      const calmNotes = [220, 0, 277.18, 329.63, 0, 392, 329.63, 277.18];
+      const calmNotes = [profile.notes[0]!, 0, profile.notes[2]!, profile.notes[3]!, 0, profile.notes[4]!, profile.notes[3]!, profile.notes[1]!];
       const note = calmNotes[this.musicStep % calmNotes.length]!;
-      if (note > 0) this.note(note, 0.78, 0.013);
-      if (this.musicStep % 8 === 0) this.note(110, 1.8, 0.009, "sine");
+      if (note > 0) this.note(note, 0.78, 0.011, profile.timbre);
+      if (this.musicStep % 8 === 0) this.note(profile.drone, 1.8, 0.007, "sine");
       this.musicCooldown = 0.86;
     }
     this.musicStep += 1;
@@ -606,8 +655,10 @@ export class SilkRoadGame {
     audioPanel: document.querySelector<HTMLElement>("#audioPanel")!,
     musicVolume: document.querySelector<HTMLInputElement>("#musicVolume")!,
     effectsVolume: document.querySelector<HTMLInputElement>("#effectsVolume")!,
+    ambienceVolume: document.querySelector<HTMLInputElement>("#ambienceVolume")!,
     nightBrightness: document.querySelector<HTMLInputElement>("#nightBrightness")!,
     muteAudio: document.querySelector<HTMLButtonElement>("#muteAudioBtn")!,
+    lowDynamics: document.querySelector<HTMLButtonElement>("#lowDynamicsBtn")!,
     pauseButton: document.querySelector<HTMLButtonElement>("#pauseBtn")!,
     autoDeploy: document.querySelector<HTMLButtonElement>("#autoDeployBtn")!,
     endDay: document.querySelector<HTMLButtonElement>("#endDayBtn")!,
@@ -941,9 +992,16 @@ export class SilkRoadGame {
       this.hud.speed.innerHTML = `<b>${this.state.nightSpeed}x</b>`;
     });
     this.hud.sound.addEventListener("click", () => this.hud.audioPanel.classList.toggle("is-hidden"));
-    const updateAudioLevels = () => this.sound.setLevels(Number(this.hud.musicVolume.value) / 100, Number(this.hud.effectsVolume.value) / 100);
+    const updateAudioLevels = () => this.sound.setLevels(Number(this.hud.musicVolume.value) / 100, Number(this.hud.effectsVolume.value) / 100, Number(this.hud.ambienceVolume.value) / 100);
     this.hud.musicVolume.addEventListener("input", updateAudioLevels);
+    this.hud.ambienceVolume.addEventListener("input", updateAudioLevels);
     this.hud.effectsVolume.addEventListener("input", updateAudioLevels);
+    this.hud.lowDynamics.addEventListener("click", () => {
+      const enabled = this.hud.lowDynamics.getAttribute("aria-pressed") !== "true";
+      this.hud.lowDynamics.setAttribute("aria-pressed", String(enabled));
+      this.hud.lowDynamics.classList.toggle("is-active", enabled);
+      this.sound.setLowDynamics(enabled);
+    });
     this.hud.nightBrightness.addEventListener("input", () => {
       this.nightBrightness = Number(this.hud.nightBrightness.value) / 100;
       localStorage.setItem("silk-road-bastion:night-brightness", String(this.nightBrightness));
@@ -2060,20 +2118,35 @@ export class SilkRoadGame {
       pad.userData.padIndex = index;
       pad.userData.zoneType = zone.type;
       if (zone.elevation > 0.35) {
+        // Raised defence sockets are wall terraces, not isolated polygonal mounds.
+        // A rectangular sandstone plinth aligns with the fort architecture and
+        // leaves a clear mounting surface without looking like a board-game token.
+        const supportMaterial = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(region.floor).lerp(new THREE.Color(0x6d5b48), 0.45),
+          map: this.library.worldTexture("stone") ?? null,
+          roughness: 0.95
+        });
         const support = new THREE.Mesh(
-          new THREE.CylinderGeometry(size * 0.54, size * 0.62, zone.elevation + 0.22, 12),
-          new THREE.MeshStandardMaterial({
-            color: new THREE.Color(region.floor).lerp(new THREE.Color(0x6d5b48), 0.45),
-            map: this.library.worldTexture("stone") ?? null,
-            roughness: 0.95
-          })
+          new THREE.BoxGeometry(size * 1.06, zone.elevation + 0.22, zone.type === "siege" ? 4.85 : 3.9),
+          supportMaterial
         );
         support.position.copy(this.zonePosition(index));
         support.position.y = (zone.elevation + 0.22) * 0.5 - 0.06;
+        support.rotation.y = zone.rotation;
         support.receiveShadow = true;
         support.castShadow = true;
         support.userData.ground = true;
         this.world.add(support);
+        const terraceTrim = new THREE.Mesh(
+          new THREE.BoxGeometry(size * 1.12, 0.15, zone.type === "siege" ? 4.98 : 4.03),
+          new THREE.MeshStandardMaterial({ color: 0x7c654c, roughness: 0.9 })
+        );
+        terraceTrim.position.copy(this.zonePosition(index));
+        terraceTrim.position.y = zone.elevation + 0.1;
+        terraceTrim.rotation.y = zone.rotation;
+        terraceTrim.receiveShadow = true;
+        terraceTrim.userData.ground = true;
+        this.world.add(terraceTrim);
       }
       const isTutorialTarget = this.tutorialPadIndex() === index;
       const zoneMaterial = new THREE.MeshStandardMaterial({
@@ -2102,17 +2175,8 @@ export class SilkRoadGame {
         anchor.position.set(x, 0.22, z);
         marker.add(anchor);
       }
-      if (zone.type === "defense") {
-        const rail = new THREE.Mesh(new THREE.BoxGeometry(size - 0.7, 0.16, 0.18), trimMaterial);
-        rail.position.set(0, 0.28, -halfZ);
-        marker.add(rail);
-      } else if (zone.type === "logistics") {
-        for (const x of [-0.48, 0.48]) {
-          const skid = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 2.9), trimMaterial);
-          skid.position.set(x, 0.2, 0);
-          marker.add(skid);
-        }
-      }
+      // Do not add floating rails or skids. The low foundation and four grounded
+      // anchors are sufficient once a compatible building is selected.
       marker.visible = isTutorialTarget || isFreshExpansion;
       pad.add(marker);
       pad.userData.zoneMarker = marker;
@@ -2233,12 +2297,16 @@ export class SilkRoadGame {
       const expansionPad = this.isFreshExpansionPad(index);
       const occupied = this.state!.buildings.some((building) => building.padIndex === index && building.id !== relocatingBuilding?.id);
       const valid = Boolean(activeType && canBuildInZone(activeType, zone) && !occupied);
-      marker.visible = index === target || expansionPad || Boolean(activeType);
+      // Idle build sockets are part of the layout logic, not permanent scenery.
+      // Showing them as beige pads made the courtyard look unfinished and could be
+      // mistaken for buildings. They only appear while the player is actually
+      // building, relocating, or following the one active tutorial prompt.
+      marker.visible = index === target || Boolean(activeType && valid);
       const color = activeType ? (valid ? 0x58b98c : 0xbd5a49) : accent;
       material.color.set(color);
       material.emissive.set(color);
-      material.emissiveIntensity = index === target ? 0.5 : valid ? 0.3 : expansionPad ? 0.24 : 0.12;
-      material.opacity = activeType ? (valid ? 0.46 : 0.26) : 0.3;
+      material.emissiveIntensity = index === target ? 0.5 : valid ? 0.3 : expansionPad ? 0.18 : 0.08;
+      material.opacity = activeType ? (valid ? 0.46 : 0.26) : 0;
     });
   }
 
@@ -3903,7 +3971,9 @@ function makeWindWornMound(
     if (!this.running || !this.state || this.paused) return;
 
     const simulationDelta = this.state.phase === "night" ? delta * this.state.nightSpeed : delta;
-    this.sound.updateMusic(this.state.phase, delta);
+    const bossActive = this.state.enemies.some((enemy) => Boolean(enemy.bossKind) && enemy.hp > 0);
+    const pressure = this.state.phase === "night" ? Math.min(1, (this.state.enemies.length + this.spawnQueue.length * 0.35) / 12) : 0;
+    this.sound.updateMusic(this.state.phase, delta, this.state.regionId, pressure, bossActive);
     this.boundaryHintCooldown = Math.max(0, this.boundaryHintCooldown - delta);
     this.promptTimer = Math.max(0, this.promptTimer - delta);
     if (this.promptTimer <= 0 && this.state.tutorialStep >= 3) this.hud.prompt.classList.add("is-hidden");
@@ -4595,6 +4665,11 @@ function makeWindWornMound(
         || object.userData.padIndex !== undefined
         || object.userData.occlusionRegistered
         || this.findUserData(object, "player")
+        // Buildings and the core must keep a complete silhouette. Partial or even
+        // whole-building transparency reads as missing walls/roofs in an isometric
+        // game. Camera-safe placement and wall fading handle visibility instead.
+        || this.findUserData(object, "buildingId")
+        || this.findUserData(object, "core")
         || this.findUserData(object, "resourceId")
       ) return;
       const bounds = new THREE.Box3().setFromObject(object);
@@ -4603,7 +4678,15 @@ function makeWindWornMound(
       const materials = source.map((material) => material.clone());
       object.material = Array.isArray(object.material) ? materials : materials[0]!;
       object.userData.occlusionRegistered = true;
-      this.occluderMeshes.push({ mesh: object, materials, opacities: materials.map((material) => material.opacity) });
+      const buildingId = this.findUserData(object, "buildingId");
+      const groupKey = typeof buildingId === "string"
+        ? `building:${buildingId}`
+        : this.findUserData(object, "core")
+          ? "core"
+          : this.findUserData(object, "gate")
+            ? "gate"
+            : `mesh:${object.id}`;
+      this.occluderMeshes.push({ mesh: object, materials, opacities: materials.map((material) => material.opacity), groupKey });
     });
   }
 
@@ -4623,14 +4706,19 @@ function makeWindWornMound(
       if (targetDistance >= 0.2) {
         this.occlusionRaycaster.set(this.camera.position, rayDirection.normalize());
         const intersections = this.occlusionRaycaster.intersectObjects(this.occluderMeshes.map((entry) => entry.mesh), false);
+        const hitGroups = new Set<string>();
         for (const hit of intersections) {
           if (hit.distance >= targetDistance - 0.72) break;
-          this.occludedMeshes.add(hit.object as THREE.Mesh);
+          const entry = this.occluderMeshes.find((candidate) => candidate.mesh === hit.object);
+          if (entry) hitGroups.add(entry.groupKey);
         }
+        for (const entry of this.occluderMeshes) if (hitGroups.has(entry.groupKey)) this.occludedMeshes.add(entry.mesh);
       }
     }
     for (const entry of this.occluderMeshes) {
-      const targetOpacity = this.occludedMeshes.has(entry.mesh) ? 0.22 : 1;
+      // Fade a whole building coherently. Fading only the roof or one wall made complete
+      // structures look broken, which is worse than a slightly stronger translucent shell.
+      const targetOpacity = this.occludedMeshes.has(entry.mesh) ? 0.5 : 1;
       entry.materials.forEach((material, index) => {
         const baseOpacity = entry.opacities[index] ?? 1;
         const desiredOpacity = this.occludedMeshes.has(entry.mesh) ? Math.min(baseOpacity, targetOpacity) : baseOpacity;
@@ -5759,6 +5847,7 @@ function makeWindWornMound(
     this.hud.waveClear.classList.add("is-hidden");
     this.state.phase = "relic";
     this.state.phaseTime = 0;
+    this.setChoiceUi(true);
     const stackCount = (id: string) => this.state!.relicStacks.find((entry) => entry.id === id)?.stacks ?? 0;
     const isSupplyNight = this.state.mode === "survival" && this.state.epoch % 3 === 0;
     const isBossNight = this.state.epoch % 5 === 0;
@@ -5945,9 +6034,40 @@ function makeWindWornMound(
     this.choiceLabels = [];
   }
 
+  /** Choice and route selection are exclusive scene states, not overlays on a selected building. */
+  private setChoiceUi(active: boolean): void {
+    this.hud.root.classList.toggle("is-choice-phase", active);
+    if (active) {
+      this.selectedBuildingId = null;
+      this.selectedEnemyId = null;
+      this.selectedBuild = null;
+      this.selectedResourceId = null;
+      if (this.relocation) this.cancelRelocation(false);
+      if (this.preview) {
+        this.world.remove(this.preview);
+        this.preview = undefined;
+      }
+      if (this.rangeIndicator) {
+        this.world.remove(this.rangeIndicator);
+        this.rangeIndicator = undefined;
+      }
+      this.hud.context.classList.add("is-hidden");
+      this.hud.gateBar.classList.add("is-choice-hidden");
+      this.hud.coreBar.classList.add("is-choice-hidden");
+      this.hud.buildingLabels.classList.add("is-choice-hidden");
+      this.hud.hotbar.classList.add("is-choice-hidden");
+      return;
+    }
+    this.hud.gateBar.classList.remove("is-choice-hidden");
+    this.hud.coreBar.classList.remove("is-choice-hidden");
+    this.hud.buildingLabels.classList.remove("is-choice-hidden");
+    this.hud.hotbar.classList.remove("is-choice-hidden");
+  }
+
   private nextEpoch(): void {
     if (!this.state) return;
     this.clearChoices();
+    this.setChoiceUi(false);
     this.state.epoch += 1;
     this.state.phase = "day";
     this.hornedThisDay = false;
@@ -6305,7 +6425,7 @@ function makeWindWornMound(
 
   private positionWorldUi(): void {
     if (this.gateObject) this.positionElement(this.hud.gateBar, new THREE.Vector3(0, 6.3, -12));
-    if (this.coreObject) this.positionElement(this.hud.coreBar, CORE_POSITION.clone().setY(8.15));
+    if (this.coreObject) this.positionElement(this.hud.coreBar, CORE_POSITION.clone().setY(5.45));
     if (this.selectedBuildingId) {
       const object = this.buildingObjects.get(this.selectedBuildingId);
       if (object) this.positionElement(this.hud.context, object.position.clone().setY(6.6));
@@ -6340,7 +6460,7 @@ function makeWindWornMound(
 
   private updateGateBarPosition(): void {
     if (this.gateObject) this.positionElement(this.hud.gateBar, new THREE.Vector3(0, 6.3, -12));
-    if (this.coreObject) this.positionElement(this.hud.coreBar, CORE_POSITION.clone().setY(8.15));
+    if (this.coreObject) this.positionElement(this.hud.coreBar, CORE_POSITION.clone().setY(5.45));
   }
 
   private positionElement(element: HTMLElement, position: THREE.Vector3): void {

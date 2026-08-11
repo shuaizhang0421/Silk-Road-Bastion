@@ -276,6 +276,11 @@ button:focus-visible, input:focus-visible {
 .audio-panel label { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 8px; color: #c9d3c6; font-size: 10px; font-weight: 800; }
 .audio-panel input { accent-color: #e0aa50; }
 .audio-panel button { min-height: 29px; border: 1px solid rgba(226,173,85,.42); border-radius: 8px; background: #28534f; color: #e5d7b5; cursor: pointer; font: inherit; font-size: 10px; }
+.is-choice-hidden { display: none !important; }
+.hud.is-choice-phase .audio-panel,
+.hud.is-choice-phase #fieldObjective,
+.hud.is-choice-phase #nightModifier,
+.hud.is-choice-phase #enemyArrow { display: none !important; }
 .quality-setting { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding-top: 7px; border-top: 1px solid rgba(235,221,185,.13); }
 .quality-setting > span { grid-column: 1 / -1; color: #c9d3c6; font-size: 10px; font-weight: 800; }
 .quality-setting button { min-height: 26px; padding: 0; background: rgba(31,66,65,.78); color: #aebfb4; }

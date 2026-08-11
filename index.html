@@ -29,7 +29,7 @@
         </div>
           <div class="menu-deck">
             <div class="deck-heading">
-              <div><span id="modeKicker">守商路，逐夜扩建</span><mark>公开测试 v0.8.0</mark></div>
+              <div><span id="modeKicker">守商路，逐夜扩建</span><mark>本地验收 v0.8.1</mark></div>
             <small id="modeDescription">从一座小驿站出发，每 3 夜开辟新的防线。</small>
           </div>
         <div class="start-actions">
@@ -151,6 +151,7 @@
         </div>
         <section id="audioPanel" class="audio-panel is-hidden" aria-label="声音设置">
           <label>音乐 <input id="musicVolume" type="range" min="0" max="100" value="72"></label>
+          <label>环境 <input id="ambienceVolume" type="range" min="0" max="100" value="62"></label>
           <label>音效 <input id="effectsVolume" type="range" min="0" max="100" value="82"></label>
           <label>夜亮 <input id="nightBrightness" type="range" min="80" max="135" value="108" aria-label="夜间亮度"></label>
           <div class="quality-setting" role="group" aria-label="画质">
@@ -161,6 +162,7 @@
             <button type="button" data-quality="high">高</button>
           </div>
           <button id="muteAudioBtn" type="button"><i class="ph ph-speaker-high"></i>静音</button>
+          <button id="lowDynamicsBtn" type="button" aria-pressed="false"><i class="ph ph-waveform"></i>夜间柔和</button>
         </section>
 
         <div id="hotbar" class="hotbar" aria-label="建造快捷栏"></div>

@@ -1,11 +1,13 @@
 import type {
   AnimationSet,
   AssetManifestEntry,
+  BuildingVisualDefinition,
   BossKind,
   EnemyType,
   EnvironmentClusterDefinition,
   InteractionAnchor,
   MaterialSetDefinition,
+  ModelGeometryContract,
   RegionAssetBundle,
   VisualAssetDefinition
 } from "./types";
@@ -59,6 +61,15 @@ export const runtimeAssetManifest: AssetManifestEntry[] = [
     license: "CC0-1.0",
     source: "https://polyhaven.com/license",
     modified: "选用 1K 沙地、旧砂岩、粗木和锈蚀金属 PBR 贴图并统一色调"
+  },
+  {
+    id: "silk-road-procedural-soundscape-v2",
+    path: "src/game.ts",
+    type: "audio",
+    author: "Silk Road Bastion project",
+    license: "Project Original",
+    source: "Project-authored Web Audio synthesis",
+    modified: "原创四区域音阶、环境噪声、战斗分层与效果音变体；不包含第三方录音或商业游戏采样"
   }
 ];
 
@@ -131,6 +142,19 @@ export const sharedVisualAssets: Record<string, VisualAssetDefinition> = {
   resourceStone: { id: "resourceStone", desktopPath: "assets/models/runtime/desktop/Wall_UnevenBrick_Straight.glb", mobilePath: "assets/models/runtime/mobile/Wall_UnevenBrick_Straight.glb", lodDistances: [24, 55], collider: "none", interactionAnchor: "resource-wide", bundle: "common", triangleBudget: [2400, 900, 280] }
 };
 export const oasisVisualAssets = sharedVisualAssets;
+
+export const modelGeometryContracts: Record<string, ModelGeometryContract> = {
+  "village-wall": { id: "village-wall", nativeBounds: [2, 3.123, 0.406], targetBounds: [4.2, 3.4, 0.72], fitMode: "axis-fit", groundPivot: "bounds-min", colliderBounds: [4.2, 3.4, 0.72], mobileSizeTolerance: 0.03 },
+  "village-window-wall": { id: "village-window-wall", nativeBounds: [2, 3.123, 0.406], targetBounds: [4.7, 3.4, 0.82], fitMode: "axis-fit", groundPivot: "bounds-min", colliderBounds: [4.7, 3.4, 0.82], mobileSizeTolerance: 0.03 },
+  "village-balcony": { id: "village-balcony", nativeBounds: [2, 1.23, 0.206], targetBounds: [5.35, 1.1, 2.25], fitMode: "axis-fit", groundPivot: "bounds-min", colliderBounds: [5.35, 1.1, 2.25], mobileSizeTolerance: 0.03 },
+  "village-wagon": { id: "village-wagon", nativeBounds: [1.951, 1.529, 4.024], targetBounds: [2.4, 1.55, 1.6], fitMode: "contain", groundPivot: "bounds-min", colliderBounds: [2.4, 1.55, 1.6], mobileSizeTolerance: 0.03 }
+};
+
+export const buildingVisualDefinitions: Record<string, BuildingVisualDefinition> = {
+  market: { id: "market", footprint: [5.4, 4.3], heightRange: [3.2, 5.2], requiredParts: ["foundation", "body", "roof", "entrance"], openSides: ["front"] },
+  workshop: { id: "workshop", footprint: [5.05, 4.25], heightRange: [3.4, 5.8], requiredParts: ["foundation", "body", "roof", "entrance"], openSides: ["front"] },
+  core: { id: "core", footprint: [6.35, 4.9], heightRange: [3.7, 5.2], requiredParts: ["foundation", "body", "roof", "entrance"], openSides: [] }
+};
 
 export const oasisInteractionAnchors: Record<string, InteractionAnchor> = {
   "resource-wide": {

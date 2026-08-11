@@ -1,7 +1,7 @@
 {
   "name": "silk-road-bastion-3d",
   "private": true,
-  "version": "0.8.0-playtest",
+  "version": "0.8.1-playtest",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
@@ -13,6 +13,8 @@
     "test:assets": "node scripts/audit-assets.mjs",
     "test:regions": "tsx scripts/test-region-bundles.ts",
     "test:onboarding": "tsx scripts/test-onboarding-flow.ts"
+    ,"test:geometry": "tsx scripts/test-geometry-contract.ts"
+    ,"test:audio": "node scripts/test-audio-contract.mjs"
   },
   "dependencies": {
     "@phosphor-icons/web": "^2.1.2",

@@ -239,6 +239,48 @@ export interface VisualAssetDefinition {
   animations?: string;
 }
 
+export type ModelFitMode = "contain" | "axis-fit" | "tile-x" | "natural";
+
+/** World-space contract used to prevent authored assets collapsing into thin panels. */
+export interface ModelGeometryContract {
+  id: string;
+  nativeBounds: readonly [number, number, number];
+  targetBounds: readonly [number, number, number];
+  fitMode: ModelFitMode;
+  groundPivot: "bounds-min" | "authored";
+  colliderBounds: readonly [number, number, number];
+  mobileSizeTolerance: number;
+}
+
+export interface BuildingVisualDefinition {
+  id: string;
+  footprint: readonly [number, number];
+  heightRange: readonly [number, number];
+  requiredParts: readonly ("foundation" | "body" | "roof" | "entrance")[];
+  openSides: readonly ("front" | "rear" | "left" | "right")[];
+}
+
+export type MusicState = "explore" | "prepare" | "danger" | "boss" | "choice" | "victory" | "defeat";
+
+export interface AudioCueDefinition {
+  id: string;
+  category: "music" | "ambience" | "effect";
+  variants: readonly string[];
+  volume: number;
+  cooldownMs: number;
+  maxVoices: number;
+  spatial: boolean;
+}
+
+export interface RegionAudioProfile {
+  regionId: string;
+  scale: readonly number[];
+  drone: number;
+  tempo: number;
+  ambience: readonly ("wind" | "water" | "rain" | "camp" | "stone" | "metal")[];
+  timbre: OscillatorType;
+}
+
 export interface MaterialSetDefinition {
   id: string;
   colorPath: string;

@@ -2,6 +2,14 @@
 
 > v0.8 合规原则：运行时仅使用本清单所列原创、CC0 或逐项审核的 CC BY 资产；不加载其他游戏、影视或来源不明的远程素材。第三方代码声明见项目根目录 `THIRD_PARTY_NOTICES.md`。
 
+## 项目原创程序音频
+
+- 名称：Silk Road Bastion Procedural Soundscape v2
+- 作者：Silk Road Bastion project
+- 许可证：Project Original
+- 路径：`src/game.ts`
+- 说明：原创四区域音阶、环境噪声、战斗分层和效果音变体；不使用第三方录音、受版权保护编曲或商业游戏采样。
+
 ## Kenney Castle Kit
 
 - 来源：https://kenney.nl/assets/castle-kit

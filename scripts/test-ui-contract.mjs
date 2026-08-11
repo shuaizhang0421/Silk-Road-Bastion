@@ -54,6 +54,9 @@ if (!css.includes(".prompt") || !css.includes(".resource-hud") || !css.includes(
 if (!game.includes("refreshBuildZoneVisibility") || !game.includes("autoArrangeBuildings") || !game.includes("beginRelocation")) {
   throw new Error("功能区域、迁移或一键布防没有接入实际游戏循环");
 }
+if (!game.includes("setChoiceUi(true)") || !game.includes("is-choice-hidden") || !css.includes(".is-choice-hidden")) {
+  throw new Error("遗物与迁营阶段没有清理建筑选择或隐藏冲突 HUD");
+}
 if (game.includes("PAD_POSITIONS") || game.includes("distantPanorama")) {
   throw new Error("旧统一石台或固定全景背景仍残留在运行时代码中");
 }

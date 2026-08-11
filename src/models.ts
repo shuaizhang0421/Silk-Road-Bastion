@@ -433,18 +433,28 @@ export class AssetLibrary {
     return this.models.has(name);
   }
 
-  /** Clone an authored module and normalize it to a predictable scene-space box. */
-  fittedModel(name: string, size: [number, number, number], tint?: number, tintStrength = 0.08): THREE.Object3D {
+  /** Structural modules use exact axis fitting; natural props retain authored proportions. */
+  fittedModel(name: string, size: [number, number, number], tint?: number, tintStrength = 0.08, mode?: "contain" | "axis-fit"): THREE.Object3D {
     const object = this.model(name, tint, tintStrength);
     object.updateMatrixWorld(true);
     const bounds = new THREE.Box3().setFromObject(object);
     const measured = bounds.getSize(new THREE.Vector3());
-    const scale = Math.min(
-      measured.x > 0 ? size[0] / measured.x : 1,
-      measured.y > 0 ? size[1] / measured.y : 1,
-      measured.z > 0 ? size[2] / measured.z : 1
-    );
-    object.scale.multiplyScalar(scale);
+    const naturalProp = name === "village-wagon" || name === "village-door";
+    const fitMode = mode ?? (naturalProp ? "contain" : "axis-fit");
+    if (fitMode === "contain") {
+      const scale = Math.min(
+        measured.x > 0 ? size[0] / measured.x : 1,
+        measured.y > 0 ? size[1] / measured.y : 1,
+        measured.z > 0 ? size[2] / measured.z : 1
+      );
+      object.scale.multiplyScalar(scale);
+    } else {
+      object.scale.multiply(new THREE.Vector3(
+        measured.x > 0 ? size[0] / measured.x : 1,
+        measured.y > 0 ? size[1] / measured.y : 1,
+        measured.z > 0 ? size[2] / measured.z : 1
+      ));
+    }
     object.updateMatrixWorld(true);
     const fittedBounds = new THREE.Box3().setFromObject(object);
     const center = fittedBounds.getCenter(new THREE.Vector3());
@@ -809,25 +819,66 @@ export function makeMarket(region: RegionDefinition, library: AssetLibrary): THR
   const accent = region.accent;
   const masonry = region.id === "canyon" ? 0x8a4d3a : region.id === "mist" ? 0x586c67 : region.id === "stardust" ? 0x6a6672 : 0x9d7655;
   const timber = region.id === "mist" ? 0x3f4b48 : region.id === "canyon" ? 0x563426 : 0x71503b;
-  if (library.hasModel("village-window-wall") && library.hasModel("village-wall")) {
-    const foundation = library.fittedModel("village-wall", [5.3, 0.55, 4.25], masonry, 0.16);
-    foundation.scale.y *= 0.18;
+  // The authored village pack supplies props only. The market shell is continuous and
+  // world-sized here, so a source module can never collapse it into disconnected panels.
+  {
+    const foundation = mesh(new THREE.BoxGeometry(5.5, 0.42, 4.35), masonry, [0, 0.21, 0], [0, 0, 0], "stone");
+    foundation.name = "foundation";
     group.add(foundation);
+    const rear = mesh(new THREE.BoxGeometry(5.1, 2.45, 0.46), masonry, [0, 1.55, -1.72], [0, 0, 0], "stone");
+    rear.name = "body";
+    group.add(rear);
+    for (const side of [-1, 1]) {
+      group.add(mesh(new THREE.BoxGeometry(0.42, 2.45, 2.55), masonry, [side * 2.48, 1.55, -0.48], [0, 0, 0], "stone"));
+      group.add(mesh(new THREE.BoxGeometry(0.24, 2.75, 0.24), timber, [side * 2.22, 1.78, 1.55], [0, 0, 0], "wood"));
+    }
+    const rearRoof = mesh(new THREE.BoxGeometry(5.35, 0.24, 1.85), timber, [0, 3.08, -1.0], [0, 0, 0], "wood");
+    rearRoof.name = "roof";
+    group.add(rearRoof);
+    const awning = mesh(new THREE.BoxGeometry(5.25, 0.16, 2.35), accent, [0, 3.12, 1.15], [-0.13, 0, 0], "wood");
+    group.add(awning);
+    const entrance = new THREE.Group();
+    entrance.name = "entrance";
+    entrance.add(mesh(new THREE.BoxGeometry(4.25, 0.16, 0.52), timber, [0, 1.15, 1.66], [0, 0, 0], "wood"));
+    for (const x of [-1.8, 0, 1.8]) entrance.add(mesh(new THREE.BoxGeometry(0.16, 1.15, 0.16), timber, [x, 0.78, 1.66], [0, 0, 0], "wood"));
+    group.add(entrance);
+    if (library.hasModel("village-crate")) {
+      for (const [x, z, size] of [[1.55, 1.45, 0.7], [2.0, 0.95, 0.52], [-1.7, 1.35, 0.48]] as const) {
+        const crate = library.fittedModel("village-crate", [size, size, size], timber, 0.08, "contain");
+        crate.position.set(x, 0.44, z);
+        group.add(crate);
+      }
+    }
+    return group;
+  }
+  if (library.hasModel("village-window-wall") && library.hasModel("village-wall")) {
+    const foundation = mesh(new THREE.BoxGeometry(5.4, 0.42, 4.3), masonry, [0, 0.21, 0], [0, 0, 0], "stone");
+    foundation.name = "foundation";
+    group.add(foundation);
+    const rearBody = mesh(new THREE.BoxGeometry(5.0, 2.55, 1.8), masonry, [0, 1.7, -1.05], [0, 0, 0], "stone");
+    rearBody.name = "body";
+    group.add(rearBody);
     const front = library.fittedModel("village-window-wall", [4.9, 3.1, 0.8], masonry, 0.18);
-    front.position.set(0, 0.35, 1.72);
+    front.position.set(0, 0.42, 1.72);
+    front.name = "entrance";
     group.add(front);
     for (const side of [-1, 1]) {
       const wall = library.fittedModel("village-wall", [3.55, 3.05, 0.72], masonry, 0.16);
-      wall.position.set(side * 2.18, 0.35, -0.05);
+      wall.position.set(side * 2.31, 0.42, -0.05);
       wall.rotation.y = Math.PI / 2;
       group.add(wall);
     }
     const rear = library.fittedModel("village-wall", [4.9, 3.05, 0.72], masonry, 0.16);
-    rear.position.set(0, 0.35, -1.75);
+    rear.position.set(0, 0.42, -1.75);
     group.add(rear);
     const canopy = library.fittedModel("village-balcony", [5.35, 1.1, 2.25], accent, 0.22);
     canopy.position.set(0, 2.55, 1.45);
+    canopy.name = "gallery";
     group.add(canopy);
+    const awning = mesh(new THREE.BoxGeometry(5.25, 0.16, 2.05), accent, [0, 3.22, 1.18], [-0.16, 0, 0], "wood");
+    awning.name = "roof";
+    group.add(awning);
+    group.add(mesh(new THREE.BoxGeometry(5.15, 0.24, 2.02), timber, [0, 3.05, -1.02], [0, 0, 0], "wood"));
     const wagon = library.fittedModel("village-wagon", [2.4, 1.55, 1.6], accent, 0.08);
     wagon.position.set(-3.05, 0.02, 1.1);
     wagon.rotation.y = 0.2;
@@ -877,9 +928,50 @@ export function makeWorkshop(region: RegionDefinition, library: AssetLibrary): T
   const accent = region.accent;
   const masonry = region.id === "canyon" ? 0x82503f : region.id === "mist" ? 0x526762 : region.id === "stardust" ? 0x65616e : 0x84715c;
   const roof = region.id === "canyon" ? 0x4b342d : region.id === "mist" ? 0x334f50 : region.id === "stardust" ? 0x344f58 : 0x365c5a;
+  {
+    const foundation = mesh(new THREE.BoxGeometry(5.15, 0.42, 4.35), masonry, [0, 0.21, 0], [0, 0, 0], "stone");
+    foundation.name = "foundation";
+    group.add(foundation);
+    const rear = mesh(new THREE.BoxGeometry(4.75, 2.75, 0.48), masonry, [0, 1.68, -1.7], [0, 0, 0], "stone");
+    rear.name = "body";
+    group.add(rear);
+    for (const side of [-1, 1]) {
+      group.add(mesh(new THREE.BoxGeometry(0.44, 2.75, 3.45), masonry, [side * 2.35, 1.68, 0], [0, 0, 0], "stone"));
+      group.add(mesh(new THREE.BoxGeometry(1.0, 2.2, 0.42), masonry, [side * 1.88, 1.4, 1.7], [0, 0, 0], "stone"));
+    }
+    const entrance = new THREE.Group();
+    entrance.name = "entrance";
+    entrance.add(mesh(new THREE.BoxGeometry(2.65, 0.24, 0.48), 0x5b3d2b, [0, 2.55, 1.7], [0, 0, 0], "wood"));
+    group.add(entrance);
+    const workshopRoof = new THREE.Mesh(new THREE.ConeGeometry(3.75, 1.34, 4), material(roof, 0.78, 0.05));
+    workshopRoof.scale.z = 0.72;
+    workshopRoof.rotation.y = Math.PI / 4;
+    workshopRoof.position.y = 3.62;
+    workshopRoof.name = "roof";
+    workshopRoof.castShadow = true;
+    group.add(workshopRoof);
+    const bench = mesh(new THREE.BoxGeometry(2.9, 0.22, 0.88), 0x654630, [0, 1.0, 1.25], [0, 0, 0], "wood");
+    group.add(bench);
+    group.add(mesh(new THREE.BoxGeometry(0.62, 2.45, 0.62), 0x665244, [1.45, 2.35, -0.8], [0, 0, 0], "stone"));
+    const gearMaterial = material(accent, 0.38, 0.56);
+    for (const [x, y, scale] of [[-0.82, 1.58, 0.48], [0.18, 1.42, 0.66], [0.98, 1.65, 0.38]] as const) {
+      const gear = new THREE.Mesh(new THREE.TorusGeometry(scale, 0.11, 8, 18), gearMaterial);
+      gear.position.set(x, y, 1.72);
+      gear.castShadow = true;
+      group.add(gear);
+    }
+    return group;
+  }
   if (library.hasModel("village-window-wall") && library.hasModel("village-wall")) {
+    const foundation = mesh(new THREE.BoxGeometry(5.05, 0.4, 4.25), masonry, [0, 0.2, 0], [0, 0, 0], "stone");
+    foundation.name = "foundation";
+    group.add(foundation);
+    const rearBody = mesh(new THREE.BoxGeometry(4.7, 2.7, 2.15), masonry, [0, 1.72, -0.8], [0, 0, 0], "stone");
+    rearBody.name = "body";
+    group.add(rearBody);
     const front = library.fittedModel("village-window-wall", [4.7, 3.45, 0.82], masonry, 0.18);
     front.position.set(0, 0.2, 1.55);
+    front.name = "entrance";
     group.add(front);
     for (const side of [-1, 1]) {
       const wall = library.fittedModel("village-wall", [3.4, 3.4, 0.72], masonry, 0.16);
@@ -893,6 +985,7 @@ export function makeWorkshop(region: RegionDefinition, library: AssetLibrary): T
     const roofModule = library.model("tower-hexagon-roof", roof, 0.24);
     roofModule.scale.set(1.55, 1.18, 1.28);
     roofModule.position.y = 3.34;
+    roofModule.name = "roof";
     group.add(roofModule);
     const chimney = library.fittedModel("village-chimney", [0.86, 2.8, 0.86], 0x665244, 0.12);
     chimney.position.set(1.28, 2.42, -0.52);
@@ -1112,38 +1205,101 @@ export function makeCore(accent: number, regionId = "oasis", library?: AssetLibr
   const stoneColor = regionId === "canyon" ? 0x704437 : regionId === "mist" ? 0x4f625e : regionId === "stardust" ? 0x5d5967 : 0x665747;
   const wallColor = regionId === "canyon" ? 0x87513d : regionId === "mist" ? 0x566b66 : regionId === "stardust" ? 0x66616d : 0x8d6b4d;
   const roofColor = regionId === "canyon" ? 0x4b3a32 : regionId === "mist" ? 0x315257 : regionId === "stardust" ? 0x334f5a : 0x345b63;
-  if (library?.hasModel("village-window-wall") && library.hasModel("village-arch")) {
-    const base = library.fittedModel("village-wall", [7.4, 0.65, 6.2], stoneColor, 0.16);
-    base.scale.y *= 0.22;
+  {
+    const base = mesh(new THREE.BoxGeometry(6.35, 0.5, 4.9), stoneColor, [0, 0.25, 0], [0, 0, 0], "stone");
+    base.name = "foundation";
     group.add(base);
-    const front = library.fittedModel("village-arch", [6.6, 3.35, 0.92], wallColor, 0.16);
-    front.position.set(0, 0.32, 2.48);
+    // A single closed masonry mass guarantees that the headquarters always reads
+    // as a complete building. Decorative modules sit on top of it; they never form
+    // the load-bearing shell and therefore cannot leave an empty cage on screen.
+    const body = mesh(new THREE.BoxGeometry(5.72, 2.72, 4.22), wallColor, [0, 1.78, 0], [0, 0, 0], "stone");
+    body.name = "body";
+    group.add(body);
+    const entrance = mesh(new THREE.BoxGeometry(1.62, 2.05, 0.18), 0x493326, [0, 1.46, 2.2], [0, 0, 0], "wood");
+    entrance.name = "entrance";
+    group.add(entrance);
+    for (const side of [-1, 1]) {
+      group.add(mesh(new THREE.BoxGeometry(0.24, 2.42, 0.26), 0x513629, [side * 1.18, 1.65, 2.28], [0, 0, 0], "wood"));
+      const window = mesh(new THREE.BoxGeometry(0.72, 0.78, 0.12), 0x233f43, [side * 1.95, 1.82, 2.18], [0, 0, 0], "stone");
+      group.add(window);
+    }
+    const coreRoof = new THREE.Group();
+    coreRoof.name = "roof";
+    const roofMaterial = material(roofColor, 0.74, 0.06);
+    // Caravanserai roofs are kept flat and usable. A single axis-aligned slab with
+    // a low parapet cannot skew under camera perspective or non-uniform scaling.
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(6.28, 0.3, 4.68), roofMaterial);
+    slab.position.y = 3.3;
+    slab.castShadow = true;
+    slab.receiveShadow = true;
+    coreRoof.add(slab);
+    const copingMaterial = material(0x273e42, 0.82, 0.04);
+    for (const z of [-2.24, 2.24]) {
+      const coping = new THREE.Mesh(new THREE.BoxGeometry(6.36, 0.28, 0.2), copingMaterial);
+      coping.position.set(0, 3.56, z);
+      coping.castShadow = true;
+      coreRoof.add(coping);
+    }
+    for (const x of [-3.08, 3.08]) {
+      const coping = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.28, 4.3), copingMaterial);
+      coping.position.set(x, 3.56, 0);
+      coping.castShadow = true;
+      coreRoof.add(coping);
+    }
+    const roofVent = mesh(new THREE.BoxGeometry(1.45, 0.42, 1.1), accent, [0, 3.63, -0.2], [0, 0, 0], "stone");
+    coreRoof.add(roofVent);
+    group.add(coreRoof);
+    const awning = mesh(new THREE.BoxGeometry(3.25, 0.18, 1.02), accent, [0, 2.72, 2.47], [0, 0, 0], "wood");
+    group.add(awning);
+    const lantern = mesh(new THREE.CylinderGeometry(0.2, 0.28, 0.6, 10), 0xe2ad55, [0, 2.72, 2.7]);
+    (lantern.material as THREE.MeshStandardMaterial).emissive.set(0xe2ad55);
+    (lantern.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.75;
+    lantern.name = "core-lantern";
+    group.add(lantern);
+    const light = new THREE.PointLight(0xe2ad55, 1.8, 14, 2);
+    light.position.set(0, 2.9, 2.72);
+    group.add(light);
+    return group;
+  }
+  const legacyLibrary = library as AssetLibrary;
+  if (legacyLibrary.hasModel("village-window-wall") && legacyLibrary.hasModel("village-arch")) {
+    const base = mesh(new THREE.BoxGeometry(6.6, 0.48, 5.25), stoneColor, [0, 0.24, 0], [0, 0, 0], "stone");
+    base.name = "foundation";
+    group.add(base);
+    const body = mesh(new THREE.BoxGeometry(5.9, 2.55, 4.45), wallColor, [0, 1.72, 0], [0, 0, 0], "stone");
+    body.name = "body";
+    group.add(body);
+    const front = legacyLibrary.fittedModel("village-arch", [5.6, 2.8, 0.72], wallColor, 0.16);
+    front.position.set(0, 0.38, 2.28);
+    front.name = "entrance";
     group.add(front);
-    const rear = library.fittedModel("village-window-wall", [6.55, 3.35, 0.82], wallColor, 0.16);
-    rear.position.set(0, 0.32, -2.48);
+    const rear = legacyLibrary.fittedModel("village-window-wall", [6.55, 3.35, 0.82], wallColor, 0.16);
+    rear.position.set(0, 0.38, -2.28);
     group.add(rear);
     for (const side of [-1, 1]) {
-      const wall = library.fittedModel("village-window-wall", [5.0, 3.35, 0.82], wallColor, 0.16);
-      wall.position.set(side * 3.02, 0.32, 0);
+      const wall = legacyLibrary.fittedModel("village-window-wall", [5.0, 3.35, 0.82], wallColor, 0.16);
+      wall.position.set(side * 2.98, 0.38, 0);
       wall.rotation.y = Math.PI / 2;
       group.add(wall);
     }
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(3.45, 40, 24, 0, Math.PI * 2, 0, Math.PI * 0.52), material(roofColor, 0.54, 0.18));
-    dome.scale.z = 0.82;
-    dome.position.y = 3.15;
-    dome.castShadow = true;
-    dome.receiveShadow = true;
-    group.add(dome);
-    const gallery = library.fittedModel("village-balcony", [6.7, 1.0, 2.1], accent, 0.18);
-    gallery.position.set(0, 2.55, 2.65);
+    const coreRoof = new THREE.Mesh(new THREE.ConeGeometry(4.05, 1.38, 4), material(roofColor, 0.72, 0.08));
+    coreRoof.scale.z = 0.78;
+    coreRoof.rotation.y = Math.PI / 4;
+    coreRoof.position.y = 3.7;
+    coreRoof.name = "roof";
+    coreRoof.castShadow = true;
+    coreRoof.receiveShadow = true;
+    group.add(coreRoof);
+    const gallery = legacyLibrary.fittedModel("village-balcony", [5.7, 0.82, 1.55], accent, 0.18);
+    gallery.position.set(0, 2.42, 2.42);
     group.add(gallery);
-    const lantern = mesh(new THREE.CylinderGeometry(0.22, 0.3, 0.64, 12), 0xe2ad55, [0, 3.18, 3.02]);
+    const lantern = mesh(new THREE.CylinderGeometry(0.22, 0.3, 0.64, 12), 0xe2ad55, [0, 2.86, 2.68]);
     (lantern.material as THREE.MeshStandardMaterial).emissive.set(0xe2ad55);
     (lantern.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.85;
     lantern.name = "core-lantern";
     group.add(lantern);
     const light = new THREE.PointLight(0xe2ad55, 2.2, 16, 2);
-    light.position.set(0, 3.35, 3.05);
+    light.position.set(0, 3.05, 2.72);
     group.add(light);
     return group;
   }
