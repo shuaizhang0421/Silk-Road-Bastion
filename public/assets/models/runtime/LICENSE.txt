@@ -1,0 +1,13 @@
+This is the standard FREE version of the Medieval Village MegaKit.
+
+License: CC0 1.0 Universal (CC0 1.0)
+Public Domain Dedication
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Models by Quaternius (@Quaternius)
+Source: https://quaternius.com/packs/medievalvillagemegakit.html
+
+Project modifications:
+- Only the ten structural and prop modules used by the game were retained.
+- Desktop and mobile variants were exported as self-contained Meshopt-compressed GLB files with WebP textures.
+- Models are recombined, recolored and decorated as an original Silk Road fantasy outpost.

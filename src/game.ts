@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import {
   buildings,
+  bossDefinitions,
   bossEnemyType,
   bossForNight,
   canAfford,
@@ -9,11 +10,13 @@ import {
   enemyHealthScale,
   emptyMeta,
   enemies,
-  nightModifiers,
+  nightModifiersForEpoch,
   modeName,
   pay,
   regionById,
   regions,
+  regionVisualProfiles,
+  qualityPresets,
   relics,
   ASSET_VERSION,
   PREVIOUS_SAVE_KEY,
@@ -23,6 +26,7 @@ import {
 } from "./data";
 import {
   AssetLibrary,
+  decorateBoss,
   enemyCharacterKind,
   makeBuildModel,
   makeCore,
@@ -33,16 +37,22 @@ import {
   type CharacterRig
 } from "./models";
 import { isSafeSaveEnvelope, migrateSaveEnvelope } from "./save-migration";
+import { canBuildInZone, fortLayout } from "./fort-layout";
+import { oasisInteractionAnchors, regionEnvironmentClusters } from "./asset-manifest";
 import type {
+  BuildingRelocationState,
   BuildingState,
   BuildingType,
   BossKind,
+  BossAction,
   EnemyState,
   EnemyType,
   GameMode,
   GameState,
+  GateRepairQuote,
   HeroClass,
   MetaProgress,
+  QualityTier,
   RegionDefinition,
   ResourceKey,
   Resources,
@@ -52,60 +62,82 @@ import type {
 } from "./types";
 
 const BUILD_ORDER: BuildingType[] = ["market", "workshop", "ballista", "fire", "antiair", "trebuchet"];
-const ROAD_LANES = [-3.2, 0, 3.2];
+const ROAD_LANES = [-6.2, 0, 6.2];
+
+/** 远景专用的不规则岩脊，避免规则圆锥在俯视镜头中呈现成一排金字塔。 */
+function makeHorizonMound(material: THREE.MeshStandardMaterial, radiusX: number, radiusZ: number, height: number, seed: number, segments: number): THREE.Mesh {
+  const vertices: number[] = [];
+  const indices: number[] = [];
+  // A long, broken ridgeline is far more natural than a single apex. Each slice has
+  // front/back foothills and a narrow irregular crest, producing layered canyon silhouettes.
+  for (let index = 0; index <= segments; index += 1) {
+    const t = index / segments;
+    const envelope = Math.pow(Math.sin(Math.PI * t), 0.58);
+    const x = (t * 2 - 1) * radiusX;
+    const localHeight = height * (0.12 + envelope * 0.78) * (0.88 + Math.sin(seed + index * 1.91) * 0.12 + Math.cos(seed * 0.47 + index * 0.83) * 0.07);
+    const width = radiusZ * (0.42 + envelope * 0.62) * (0.9 + Math.sin(seed * 0.72 + index) * 0.1);
+    vertices.push(
+      x, 0, width,
+      x, localHeight, width * 0.12,
+      x, localHeight * (0.86 + Math.sin(seed + index * 0.57) * 0.1), -width * 0.1,
+      x, 0, -width
+    );
+    if (index < segments) {
+      const base = index * 4;
+      const next = base + 4;
+      indices.push(
+        base, next, base + 1, base + 1, next, next + 1,
+        base + 2, next + 2, base + 3, base + 3, next + 2, next + 3,
+        base + 1, next + 1, base + 2, base + 2, next + 1, next + 2,
+        base, base + 3, next, next, base + 3, next + 3
+      );
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return new THREE.Mesh(geometry, material);
+}
 /** 城门外三条来袭通道各有一个道路附件位；拒马只能放在这些位置，不与院内建筑抢地基。 */
 function fortificationPosition(lane: number): THREE.Vector3 {
   const lateral = ROAD_LANES[lane + 1] ?? 0;
-  // 拒马在门外的第一段商道，而不是远处装饰区：默认镜头无需缩放就能识别三处施工位。
-  return new THREE.Vector3(lateral, 0, lane === 0 ? -17.5 : -16.55);
+  // A shallow fan outside the gate keeps all three road attachments readable and clickable.
+  return new THREE.Vector3(lateral, 0, lane === 0 ? -22 : -20.4);
 }
-// 主帐放在院落视觉中心、前排石台之后：默认俯视镜头同时能读到城门、道路和守护目标，
+// 主帐放在院落视觉中心、前排城防位之后：默认俯视镜头同时能读到城门、道路和守护目标，
 // 不会被靠近镜头的后墙长期遮住。
 const CORE_POSITION = new THREE.Vector3(0, 0, 7.6);
-const PAD_POSITIONS = [
-  new THREE.Vector3(-5.5, 0, -5.2),
-  new THREE.Vector3(5.5, 0, -5.2),
-  new THREE.Vector3(-12, 0, -3),
-  new THREE.Vector3(12, 0, -3),
-  new THREE.Vector3(-11, 0, 4.2),
-  new THREE.Vector3(11, 0, 4.2),
-  new THREE.Vector3(-6.5, 0, 9.5),
-  new THREE.Vector3(6.5, 0, 9.5),
-  new THREE.Vector3(-11.5, 0, 14.2),
-  new THREE.Vector3(11.5, 0, 14.2),
-  new THREE.Vector3(-7.2, 0, 22.2),
-  new THREE.Vector3(7.2, 0, 22.2)
-];
 // 每种地貌模块都有独立资源布局；所有位置均落在已铺设的商道/支路上。
 // 因此不同世界不只是资源类型轮换，出城路线、风险与先拿哪一堆材料也会改变。
 const RESOURCE_LAYOUTS = [
   [
-    new THREE.Vector3(-24, 0, -22), new THREE.Vector3(23, 0, -20),
-    new THREE.Vector3(-27, 0, 3), new THREE.Vector3(27, 0, 6),
-    new THREE.Vector3(-18, 0, -34), new THREE.Vector3(18, 0, -34),
-    new THREE.Vector3(-28, 0, -12), new THREE.Vector3(28, 0, -8),
-    new THREE.Vector3(-42, 0, -48), new THREE.Vector3(42, 0, -46)
+    new THREE.Vector3(-13, 0, -27), new THREE.Vector3(13, 0, -27),
+    new THREE.Vector3(-20, 0, -35), new THREE.Vector3(20, 0, -35),
+    new THREE.Vector3(-29, 0, -44), new THREE.Vector3(29, 0, -44),
+    new THREE.Vector3(-12, 0, -48), new THREE.Vector3(12, 0, -48),
+    new THREE.Vector3(-35, 0, -53), new THREE.Vector3(35, 0, -53)
   ],
   [
-    new THREE.Vector3(-23, 0, -18), new THREE.Vector3(23, 0, -17),
-    new THREE.Vector3(-28, 0, -13), new THREE.Vector3(28, 0, -9),
-    new THREE.Vector3(-15, 0, -35), new THREE.Vector3(15, 0, -35),
-    new THREE.Vector3(-23, 0, 3), new THREE.Vector3(23, 0, 5),
-    new THREE.Vector3(-43, 0, 14), new THREE.Vector3(43, 0, 12)
+    new THREE.Vector3(-11, 0, -25), new THREE.Vector3(16, 0, -29),
+    new THREE.Vector3(-22, 0, -37), new THREE.Vector3(24, 0, -36),
+    new THREE.Vector3(-31, 0, -47), new THREE.Vector3(31, 0, -46),
+    new THREE.Vector3(-15, 0, -52), new THREE.Vector3(15, 0, -51),
+    new THREE.Vector3(-36, 0, -57), new THREE.Vector3(36, 0, -55)
   ],
   [
-    new THREE.Vector3(-18, 0, -34), new THREE.Vector3(18, 0, -34),
-    new THREE.Vector3(-24, 0, -22), new THREE.Vector3(23, 0, -20),
-    new THREE.Vector3(-27, 0, 3), new THREE.Vector3(27, 0, 6),
-    new THREE.Vector3(-28, 0, -13), new THREE.Vector3(28, 0, -9),
-    new THREE.Vector3(-41, 0, -47), new THREE.Vector3(41, 0, 18)
+    new THREE.Vector3(-16, 0, -30), new THREE.Vector3(12, 0, -26),
+    new THREE.Vector3(-25, 0, -39), new THREE.Vector3(21, 0, -37),
+    new THREE.Vector3(-33, 0, -48), new THREE.Vector3(30, 0, -45),
+    new THREE.Vector3(-10, 0, -53), new THREE.Vector3(16, 0, -52),
+    new THREE.Vector3(-36, 0, -58), new THREE.Vector3(36, 0, -57)
   ],
   [
-    new THREE.Vector3(-13, 0, -30), new THREE.Vector3(14, 0, -29),
-    new THREE.Vector3(-24, 0, -22), new THREE.Vector3(23, 0, -20),
-    new THREE.Vector3(-15, 0, -35), new THREE.Vector3(15, 0, -35),
-    new THREE.Vector3(-28, 0, -13), new THREE.Vector3(28, 0, -9),
-    new THREE.Vector3(-44, 0, 11), new THREE.Vector3(44, 0, -45)
+    new THREE.Vector3(-12, 0, -29), new THREE.Vector3(12, 0, -29),
+    new THREE.Vector3(-19, 0, -36), new THREE.Vector3(22, 0, -38),
+    new THREE.Vector3(-28, 0, -45), new THREE.Vector3(27, 0, -43),
+    new THREE.Vector3(-15, 0, -50), new THREE.Vector3(14, 0, -54),
+    new THREE.Vector3(-34, 0, -56), new THREE.Vector3(34, 0, -56)
   ]
 ] as const;
 // 事件只从这些经过碰撞验证的商路节点生成；它们和资源点同样位于可见的道路分支上，
@@ -149,6 +181,12 @@ interface BurstParticle {
   object: THREE.Mesh;
   velocity: THREE.Vector3;
   life: number;
+}
+
+interface FallenVisual {
+  object: THREE.Object3D;
+  life: number;
+  direction: number;
 }
 
 interface TitleActor {
@@ -439,6 +477,8 @@ export class SilkRoadGame {
   private choiceObjects: THREE.Group[] = [];
   private choiceLabels: HTMLButtonElement[] = [];
   private selectedBuild: BuildingType | null = null;
+  private placingFortification = false;
+  private regionTransitioning = false;
   private hoveredPad = -1;
   private preview?: THREE.Group;
   private clickTarget: THREE.Vector3 | null = null;
@@ -453,7 +493,9 @@ export class SilkRoadGame {
   private hudCooldown = 0;
   private projectiles: Projectile[] = [];
   private particles: BurstParticle[] = [];
+  private fallenVisuals: FallenVisual[] = [];
   private selectedBuildingId: string | null = null;
+  private relocation: BuildingRelocationState | null = null;
   private cameraYaw = 0;
   // 默认把完整院落、城门来路和一部分城外地貌留在同一视野，玩家仍可滚轮或双指拉近细看。
   private cameraDistance = 40;
@@ -478,19 +520,25 @@ export class SilkRoadGame {
   private selectedEnemyId: string | null = null;
   private hornedThisDay = false;
   private rangeIndicator?: THREE.Mesh;
-  private distantPanorama?: THREE.Mesh;
+  private weatherParticles?: THREE.Points;
+  private weatherVelocity = new THREE.Vector3();
+  private activeVisualRegionId = "oasis";
+  private previewWeatherPhase = 0;
+  private sunLight?: THREE.DirectionalLight;
+  private moonFillLight?: THREE.DirectionalLight;
+  private nightBrightness = 1.08;
   private fieldObject?: THREE.Group;
   private fortificationObjects = new Map<string, THREE.Group>();
   private titlePreview = true;
   private sound = new Soundscape();
   private storageWarningShown = false;
   private effectiveQuality: "low" | "medium" | "high" = "high";
+  private preferredQuality: QualityTier = "auto";
   private qualitySampleTime = 0;
   private qualityFrames = 0;
   private qualityStableTime = 0;
   private courtyardPavingTexture?: THREE.Texture;
   private caravanRoadTexture?: THREE.Texture;
-  private silkRoadPanoramaTexture?: THREE.Texture;
   private titleActors: TitleActor[] = [];
   private adventureProps: THREE.Object3D[] = [];
   private supportAllies: SupportAlly[] = [];
@@ -517,6 +565,8 @@ export class SilkRoadGame {
     gateHpText: document.querySelector<HTMLElement>("#gateHpText")!,
     gateUpgrade: document.querySelector<HTMLButtonElement>("#gateUpgradeBtn")!,
     gateUpgradeCost: document.querySelector<HTMLElement>("#gateUpgradeCost")!,
+    gateRepair: document.querySelector<HTMLButtonElement>("#gateRepairBtn")!,
+    gateRepairCost: document.querySelector<HTMLElement>("#gateRepairCost")!,
     coreHp: document.querySelector<HTMLElement>("#coreHpFill")!,
     coreHpText: document.querySelector<HTMLElement>("#coreHpText")!,
     coreBar: document.querySelector<HTMLElement>("#coreWorldBar")!,
@@ -525,6 +575,10 @@ export class SilkRoadGame {
     promptText: document.querySelector<HTMLElement>("#promptText")!,
     enemyArrow: document.querySelector<HTMLElement>("#enemyArrow")!,
     enemyCount: document.querySelector<HTMLElement>("#enemyCount")!,
+    bossBar: document.querySelector<HTMLElement>("#bossBar")!,
+    bossName: document.querySelector<HTMLElement>("#bossName")!,
+    bossAction: document.querySelector<HTMLElement>("#bossAction")!,
+    bossHp: document.querySelector<HTMLElement>("#bossHpFill")!,
     modifier: document.querySelector<HTMLElement>("#nightModifier")!,
     fieldObjective: document.querySelector<HTMLElement>("#fieldObjective")!,
     fieldObjectiveText: document.querySelector<HTMLElement>("#fieldObjectiveText")!,
@@ -546,12 +600,16 @@ export class SilkRoadGame {
     workshopModeText: document.querySelector<HTMLElement>("#workshopModeText")!,
     demolish: document.querySelector<HTMLButtonElement>("#demolishBtn")!,
     demolishRefund: document.querySelector<HTMLElement>("#demolishRefund")!,
+    relocate: document.querySelector<HTMLButtonElement>("#relocateBtn")!,
+    relocateText: document.querySelector<HTMLElement>("#relocateText")!,
     sound: document.querySelector<HTMLButtonElement>("#soundBtn")!,
     audioPanel: document.querySelector<HTMLElement>("#audioPanel")!,
     musicVolume: document.querySelector<HTMLInputElement>("#musicVolume")!,
     effectsVolume: document.querySelector<HTMLInputElement>("#effectsVolume")!,
+    nightBrightness: document.querySelector<HTMLInputElement>("#nightBrightness")!,
     muteAudio: document.querySelector<HTMLButtonElement>("#muteAudioBtn")!,
     pauseButton: document.querySelector<HTMLButtonElement>("#pauseBtn")!,
+    autoDeploy: document.querySelector<HTMLButtonElement>("#autoDeployBtn")!,
     endDay: document.querySelector<HTMLButtonElement>("#endDayBtn")!,
     speed: document.querySelector<HTMLButtonElement>("#speedBtn")!,
     mobileAction: document.querySelector<HTMLButtonElement>("#mobileAction")!,
@@ -583,8 +641,6 @@ export class SilkRoadGame {
     // 与模型一起等待加载，避免首局在贴图尚未就绪时把庭院固定成纯色底板。
     this.courtyardPavingTexture = this.library.worldTexture("courtyard-paving");
     this.caravanRoadTexture = this.library.worldTexture("caravan-road");
-    this.silkRoadPanoramaTexture = new THREE.TextureLoader().load("./assets/art/silk-road-panorama-v1.jpg");
-    this.silkRoadPanoramaTexture.colorSpace = THREE.SRGBColorSpace;
     this.migrateLegacySlots();
     this.meta = this.loadMeta();
     this.renderer = new THREE.WebGLRenderer({
@@ -599,8 +655,17 @@ export class SilkRoadGame {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // 3D 场景优先稳定帧率：手机/平板控制像素密度，高分屏桌面也不无上限堆像素。
+    const storedQuality = localStorage.getItem("silk-road-bastion:quality") as QualityTier | null;
+    if (storedQuality && ["auto", "low", "medium", "high"].includes(storedQuality)) this.preferredQuality = storedQuality;
+    const storedNightBrightness = Number(localStorage.getItem("silk-road-bastion:night-brightness"));
+    if (Number.isFinite(storedNightBrightness) && storedNightBrightness >= 0.8 && storedNightBrightness <= 1.35) {
+      this.nightBrightness = storedNightBrightness;
+      this.hud.nightBrightness.value = String(Math.round(storedNightBrightness * 100));
+    }
     const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
-    this.effectiveQuality = coarsePointer || window.innerWidth < 820 ? "medium" : "high";
+    this.effectiveQuality = this.preferredQuality === "auto"
+      ? coarsePointer || window.innerWidth < 820 ? "medium" : "high"
+      : this.preferredQuality;
     this.applyQuality();
     this.camera = new THREE.PerspectiveCamera(39, 1, 0.1, 180);
     this.bindEvents();
@@ -633,13 +698,13 @@ export class SilkRoadGame {
     this.hud.gameOver.classList.add("is-hidden");
     // 标题并不沿用战斗时的高空总览，而是用较低、更近的镜头把城门、院内主帐与商路放在一帧。
     // 进入游戏后 resetGameplayCamera() 会恢复适合点击建造的宽视野。
-    this.camera.position.set(0, 16.5, -31);
-    this.camera.lookAt(0, 2.9, 2.2);
+    this.camera.position.set(-8.5, 18.2, -35.5);
+    this.camera.lookAt(4.2, 2.8, 1.4);
   }
 
-  newGame(mode: GameMode, seed: string, hero: HeroClass = "guardian"): void {
+  async newGame(mode: GameMode, seed: string, hero: HeroClass = "guardian"): Promise<void> {
     // 第一版保留行者历练的封面预告与旧存档兼容，但不允许从任何入口开启半完成模式。
-    if (mode === "training") return;
+    if (mode === "training" || this.regionTransitioning) return;
     // 新建只会覆盖当前选中的本地档位。标题页上已有未结束对局时先确认，
     // 避免玩家把“新建随机世界”误当成切换地图而丢掉数小时进度。
     const existingRun = this.titlePreview ? this.envelopeForSlot(this.activeSlot)?.run : null;
@@ -650,6 +715,13 @@ export class SilkRoadGame {
     this.titlePreview = false;
     this.mode = mode;
     this.state = createGame(mode, seed, this.meta, hero);
+    this.regionTransitioning = true;
+    try {
+      await this.library.ensureRegionBundle(this.state.regionId);
+    } finally {
+      this.regionTransitioning = false;
+    }
+    this.state.qualityTier = this.preferredQuality;
     this.streams = new SeedStreams(this.state.rng);
     this.running = true;
     this.paused = false;
@@ -666,13 +738,16 @@ export class SilkRoadGame {
     this.hud.enemyArrow.classList.add("is-hidden");
     this.hud.root.classList.remove("is-hidden");
     this.hud.root.classList.remove("is-adventure");
+    this.hud.root.classList.toggle("is-survival", mode === "survival");
+    this.hud.root.classList.toggle("is-expedition", mode === "expedition");
     this.hud.adventure.classList.add("is-hidden");
     this.updateHud(true);
-    this.setPrompt("ph-storefront", "先在发光石台建造商栈，主帐和商栈会持续产币");
+    this.setPrompt("ph-storefront", "选择商栈后，后勤区会显示可用地基；建成后会持续产币");
     this.save();
   }
 
-  continueGame(): boolean {
+  async continueGame(): Promise<boolean> {
+    if (this.regionTransitioning) return false;
     const envelope = this.loadEnvelope();
     if (!envelope?.run) return false;
     if (envelope.run.mode === "training") {
@@ -684,6 +759,17 @@ export class SilkRoadGame {
     this.sound.ensure();
     this.titlePreview = false;
     this.state = envelope.run;
+    this.regionTransitioning = true;
+    try {
+      await this.library.ensureRegionBundle(this.state.regionId);
+    } finally {
+      this.regionTransitioning = false;
+    }
+    this.preferredQuality = this.state.qualityTier ?? this.preferredQuality;
+    this.effectiveQuality = this.preferredQuality === "auto"
+      ? ((window.matchMedia?.("(pointer: coarse)").matches ?? false) || window.innerWidth < 820 ? "medium" : "high")
+      : this.preferredQuality;
+    this.applyQuality();
     this.meta = envelope.meta;
     this.mode = this.state.mode;
     this.streams = new SeedStreams(this.state.rng);
@@ -694,6 +780,8 @@ export class SilkRoadGame {
     this.renderHotbar();
     this.renderModelThumbnails();
     this.hud.root.classList.toggle("is-adventure", this.mode === "training");
+    this.hud.root.classList.toggle("is-survival", this.mode === "survival");
+    this.hud.root.classList.toggle("is-expedition", this.mode === "expedition");
     this.hud.adventure.classList.toggle("is-hidden", this.mode !== "training");
     const preservedAdventureEnemies = this.mode === "training" ? [...this.state.enemies] : [];
     if (this.mode !== "training") this.state.enemies = [];
@@ -708,7 +796,7 @@ export class SilkRoadGame {
         .filter((entry): entry is (typeof relics)[number] => Boolean(entry));
       this.spawnChoices("relic", choices.map((entry) => ({ id: entry.id, color: entry.color })));
     } else if (this.state.phase === "route") {
-      this.spawnChoices("route", this.state.pendingChoices.map((id) => ({ id, color: regionById(id).accent })));
+      this.spawnChoices("route", this.state.pendingChoices.map((id) => ({ id, color: regionById(id.split("|")[0]!).accent })));
     } else if (this.state.phase === "clear") {
       this.hud.clearTitle.textContent = "守夜成功";
       this.hud.clearSubtitle.textContent = `第 ${this.state.epoch} 夜完成，驿站核心安全`;
@@ -759,12 +847,21 @@ export class SilkRoadGame {
     const width = this.canvas.clientWidth || window.innerWidth;
     const height = this.canvas.clientHeight || window.innerHeight;
     this.camera.aspect = width / height;
-    // 竖屏略微拉远，保证城门、主帐和首批石台能同时进入可读视野，而不是只看见角色脚边。
+    // 竖屏略微拉远，保证城门、主帐和首批功能区能同时进入可读视野，而不是只看见角色脚边。
     this.camera.fov = this.camera.aspect < 0.82 ? 52 : this.camera.aspect > 1.9 ? 42 : 44;
     const limits = this.cameraLimits(width, height);
     this.cameraDistance = THREE.MathUtils.clamp(this.cameraDistance, limits.min, limits.max);
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
+    this.layoutChoiceObjects();
+  }
+
+  private layoutChoiceObjects(): void {
+    if (!this.choiceObjects.length) return;
+    const aspect = (this.canvas.clientWidth || window.innerWidth) / Math.max(1, this.canvas.clientHeight || window.innerHeight);
+    const xs = aspect > 1.9 ? [-15, 0, 15] : [-7.2, 0, 7.2];
+    this.choiceObjects.forEach((object, index) => { object.position.x = xs[index] ?? 0; });
+    this.positionWorldUi();
   }
 
   private cameraLimits(width = this.canvas.clientWidth || window.innerWidth, height = this.canvas.clientHeight || window.innerHeight): { min: number; max: number } {
@@ -799,6 +896,17 @@ export class SilkRoadGame {
     this.canvas.addEventListener("pointerdown", (event) => this.handlePointerDown(event));
     this.canvas.addEventListener("pointerup", (event) => this.handlePointerUp(event));
     this.canvas.addEventListener("pointercancel", (event) => this.handlePointerUp(event));
+    this.canvas.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      if (this.relocation) this.cancelRelocation();
+      else {
+        this.placingFortification = false;
+        this.selectedBuild = null;
+        this.hoveredPad = -1;
+        this.refreshBuildZoneVisibility();
+        this.updatePreview();
+      }
+    });
     this.canvas.addEventListener("wheel", (event) => {
       this.changeCameraDistance(this.cameraDistance + Math.sign(event.deltaY) * 2.5);
     }, { passive: true });
@@ -808,14 +916,17 @@ export class SilkRoadGame {
     document.querySelector("#upgradeBtn")?.addEventListener("click", () => this.upgradeSelected());
     document.querySelector("#repairBtn")?.addEventListener("click", () => this.repairSelected());
     this.hud.workshopMode.addEventListener("click", () => this.cycleBuildingSpecialization());
+    this.hud.relocate.addEventListener("click", () => this.beginRelocation());
     this.hud.demolish.addEventListener("click", () => this.demolishSelected());
     this.hud.gateUpgrade.addEventListener("click", () => this.upgradeGate());
+    this.hud.gateRepair.addEventListener("click", () => this.repairGate());
     this.hud.pauseButton.addEventListener("click", () => this.togglePause());
+    this.hud.autoDeploy.addEventListener("click", () => this.autoArrangeBuildings());
     this.hud.endDay.addEventListener("click", () => {
       if (this.state?.mode === "expedition" && !this.meta.seenTutorial && this.state.tutorialStep < 2) {
         this.setPrompt("ph-compass", this.state.tutorialStep === 0
-          ? "第一步：点底部“商栈”，再点院内发光石台"
-          : "第二步：点底部“床弩”，再点第二座发光石台");
+          ? "第一步：点底部“商栈”，再点后院发光地基"
+          : "第二步：点底部“床弩”，再点门楼发光地基");
         return;
       }
       if (this.state?.phase === "day" && this.playerRig && this.isInsideFort(this.playerRig.root.position) && !this.selectedBuild) {
@@ -833,12 +944,21 @@ export class SilkRoadGame {
     const updateAudioLevels = () => this.sound.setLevels(Number(this.hud.musicVolume.value) / 100, Number(this.hud.effectsVolume.value) / 100);
     this.hud.musicVolume.addEventListener("input", updateAudioLevels);
     this.hud.effectsVolume.addEventListener("input", updateAudioLevels);
+    this.hud.nightBrightness.addEventListener("input", () => {
+      this.nightBrightness = Number(this.hud.nightBrightness.value) / 100;
+      localStorage.setItem("silk-road-bastion:night-brightness", String(this.nightBrightness));
+      this.updateLighting(this.state?.phase === "night" || (this.titlePreview && this.state?.mode === "survival"));
+    });
     this.hud.muteAudio.addEventListener("click", () => {
       this.sound.setMuted(!this.sound.muted);
       const icon = this.sound.muted ? "ph-speaker-slash" : "ph-speaker-high";
       this.hud.sound.innerHTML = `<i class="ph ${icon}"></i>`;
       this.hud.muteAudio.innerHTML = `<i class="ph ${icon}"></i>${this.sound.muted ? "恢复声音" : "静音"}`;
     });
+    document.querySelectorAll<HTMLButtonElement>("[data-quality]").forEach((button) => {
+      button.addEventListener("click", () => this.setQualityTier(button.dataset.quality as QualityTier));
+    });
+    this.syncQualityButtons();
     this.hud.mobileAction.addEventListener("click", () => this.interact());
     this.hud.waveClear.addEventListener("click", () => {
       if (this.state?.phase === "clear") this.state.phaseTime = 0;
@@ -900,8 +1020,10 @@ export class SilkRoadGame {
     this.choiceLabels.forEach((label) => label.remove());
     this.choiceLabels = [];
     this.hud.choiceLabels.innerHTML = "";
+    this.hud.bossBar.classList.add("is-hidden");
     this.projectiles = [];
     this.particles = [];
+    this.fallenVisuals = [];
     this.playerRig = undefined;
     this.gateObject = undefined;
     this.coreObject = undefined;
@@ -914,32 +1036,41 @@ export class SilkRoadGame {
     this.occludedMeshes.clear();
     this.occlusionRefreshCooldown = 0;
     this.selectedEnemyId = null;
+    this.selectedBuildingId = null;
+    this.hud.context.classList.add("is-hidden");
     this.preview = undefined;
     this.rangeIndicator = undefined;
-    this.distantPanorama = undefined;
+    this.relocation = null;
+    this.weatherParticles = undefined;
+    this.sunLight = undefined;
+    this.moonFillLight = undefined;
     this.clickRoute = [];
     this.moveRouteGuide = undefined;
   }
 
   private buildWorld(): void {
     const activeState = this.state ?? createGame("expedition", "TITLE", this.meta);
+    this.normalizeBuildingZones(activeState);
     const region = regionById(activeState.regionId);
+    this.activeVisualRegionId = region.id;
+    const visualProfile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
     this.clearWorld();
     const isNightPreview = this.titlePreview && activeState.mode === "survival";
     this.scene.background = new THREE.Color(isNightPreview ? 0x142c38 : region.sky);
     // 白天远景保留层次而不是用浓雾把整张地图洗成灰色；夜袭才收紧雾距制造压力。
-    this.scene.fog = new THREE.FogExp2(isNightPreview ? 0x1f3940 : region.fog, isNightPreview ? 0.014 : 0.0068);
+    const dayFogDensity = visualProfile.weather === "mist" ? 0.0115 : visualProfile.weather === "wind" ? 0.0082 : 0.0068;
+    this.scene.fog = new THREE.FogExp2(isNightPreview ? 0x1f3940 : region.fog, isNightPreview ? Math.max(0.014, dayFogDensity * 1.35) : dayFogDensity);
 
     // 环境光只负责保留阴影里的材质细节；主方向光负责塑造砖墙、圆顶和道路的体积。
     // 过去两者都太亮，场景会像均匀打光的沙盒摆件。
-    const hemi = new THREE.HemisphereLight(0xd8ccb4, 0x294347, isNightPreview ? 0.72 : 1.16);
+    const hemi = new THREE.HemisphereLight(0xd8ccb4, 0x294347, isNightPreview ? 0.94 * this.nightBrightness : 1.16);
     hemi.name = "ambient";
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(isNightPreview ? 0x7890af : 0xffd8a1, isNightPreview ? 0.78 : 3.65);
+    const sun = new THREE.DirectionalLight(isNightPreview ? 0x91acd2 : 0xffd8a1, isNightPreview ? 1.04 * this.nightBrightness : 3.65);
     sun.position.set(-22, 38, -18);
     sun.castShadow = true;
-    const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
-    sun.shadow.mapSize.set(coarsePointer || window.innerWidth < 820 ? 1024 : 1536, coarsePointer || window.innerWidth < 820 ? 1024 : 1536);
+    const shadowSize = qualityPresets[this.effectiveQuality].shadowMapSize;
+    sun.shadow.mapSize.set(shadowSize, shadowSize);
     sun.shadow.camera.left = -44;
     sun.shadow.camera.right = 44;
     sun.shadow.camera.top = 44;
@@ -947,56 +1078,31 @@ export class SilkRoadGame {
     sun.shadow.bias = -0.00035;
     sun.shadow.normalBias = 0.018;
     sun.name = "sun";
+    this.sunLight = sun;
     this.scene.add(sun);
+    // 反方向的低强度月光只勾出敌人、拒马和城墙背光侧的轮廓，
+    // 让夜袭仍有夜色，但不会因单位融进阴影而失去战术可读性。
+    const moonFill = new THREE.DirectionalLight(0x8fb9d7, isNightPreview ? 0.42 * this.nightBrightness : 0);
+    moonFill.position.set(24, 19, 14);
+    moonFill.name = "moon-fill";
+    this.moonFillLight = moonFill;
+    this.scene.add(moonFill);
 
     if (activeState.mode === "training") {
       this.buildTrainingWorld(region, activeState);
       return;
     }
 
-    // 同一套实拍质感土石贴图按区域着色：峡谷、雾港和高原也保留碎石、车辙与磨损，
-    // 不再只有绿洲有材质、其他地图退回一整块纯色平面。
-    const terrainTexture = this.library.worldTexture(`region-${region.id}`);
-    const groundMaterial = new THREE.MeshStandardMaterial({
-      color: terrainTexture ? 0xffffff : region.ground,
-      map: terrainTexture ?? null,
-      bumpMap: terrainTexture ?? null,
-      bumpScale: 0.18,
-      roughness: 0.98
-    });
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(156, 136, 42, 38), groundMaterial);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.z = -13;
-    ground.receiveShadow = true;
-    ground.userData.ground = true;
-    this.ground = ground;
-    this.world.add(ground);
-    this.buildTerrainShelf(region);
-    this.buildDistantPanorama(region, isNightPreview);
+    const terrainTexture = this.library.worldTexture(visualProfile.groundTexture);
+    this.ground = this.buildContinuousTerrain(region, activeState, terrainTexture, isNightPreview);
 
-    // 主商道是“可以走出去”的视觉锚点，刻意比荒漠更亮、更规整；
-    // 不能再让它与环境底色混成一片，导致玩家以为自己只能在城里活动。
+    // 商道只由 spawnScenery 中贴合高度场的曲线网格生成。这里不再叠加矩形平面，
+    // 否则两套道路会互相穿插，出现截图中白色长条和悬空交叉口。
     if (this.caravanRoadTexture) this.caravanRoadTexture.repeat.set(1.18, 5.6);
-    const road = new THREE.Mesh(
-      new THREE.PlaneGeometry(8.4, 54),
-      new THREE.MeshStandardMaterial({
-        color: this.caravanRoadTexture ? 0xffffff : new THREE.Color(region.ground).lerp(new THREE.Color(0xe3cb91), 0.68),
-        map: this.caravanRoadTexture ?? terrainTexture ?? null,
-        bumpMap: this.caravanRoadTexture ?? terrainTexture ?? null,
-        bumpScale: 0.075,
-        roughness: 0.9,
-        emissive: new THREE.Color(region.ground).lerp(new THREE.Color(0x372818), 0.2),
-        emissiveIntensity: 0.08
-      })
-    );
-    road.rotation.x = -Math.PI / 2;
-    road.position.set(0, 0.012, -35);
-    road.receiveShadow = true;
-    road.userData.ground = true;
-    this.world.add(road);
 
     const fortBack = this.fortBackZ(activeState);
     const floorDepth = fortBack + 12;
+    const fortWidth = this.currentFortLayout(activeState).width;
     if (this.courtyardPavingTexture) this.courtyardPavingTexture.repeat.set(2.8, Math.max(3.2, floorDepth / 7.2));
     const floorMaterial = new THREE.MeshStandardMaterial({
       color: this.courtyardPavingTexture ? 0xffffff : region.floor,
@@ -1012,7 +1118,7 @@ export class SilkRoadGame {
       floorMaterial.emissiveMap = this.courtyardPavingTexture;
       floorMaterial.emissiveIntensity = 0.16;
     }
-    const floor = new THREE.Mesh(new THREE.PlaneGeometry(34, floorDepth), floorMaterial);
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(fortWidth - 2, floorDepth), floorMaterial);
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(0, 0.025, (fortBack - 12) * 0.5);
     floor.receiveShadow = true;
@@ -1025,6 +1131,9 @@ export class SilkRoadGame {
     this.buildFortifications(region);
     this.buildPadsAndCore(region);
     this.spawnScenery(region);
+    this.buildRegionLandmark(region);
+    this.buildRegionModule(region);
+    this.buildWeather(region);
 
     if (this.titlePreview) {
       const rig = this.library.character("ranger", region.accent);
@@ -1065,76 +1174,340 @@ export class SilkRoadGame {
     this.updateGateBarPosition();
   }
 
-  /**
-   * 给开放地图一个不规则、有厚度的地貌边缘。上层仍是可点击的平面，
-   * 下层只负责远景、阴影和“驿站处在一片真实地形中”的空间感。
-   */
-  private buildTerrainShelf(region: RegionDefinition): void {
-    const outline: Array<[number, number]> = [
-      [-73, 53], [-54, 59], [-27, 56], [2, 62], [34, 57], [68, 51],
-      [75, 34], [70, 12], [74, -12], [69, -38], [72, -65], [55, -78],
-      [28, -75], [2, -82], [-27, -77], [-57, -79], [-76, -63], [-70, -36],
-      [-75, -8], [-69, 18], [-74, 39]
-    ];
-    const shape = new THREE.Shape();
-    outline.forEach(([x, z], index) => {
-      if (index === 0) shape.moveTo(x, z);
-      else shape.lineTo(x, z);
-    });
-    shape.closePath();
-    const geometry = new THREE.ExtrudeGeometry(shape, {
-      depth: 2.5,
-      bevelEnabled: true,
-      bevelSegments: 2,
-      bevelSize: 0.75,
-      bevelThickness: 0.45,
-      curveSegments: 2
-    });
+  private terrainHeightAt(x: number, z: number, region = regionById(this.state?.regionId ?? "oasis")): number {
+    if (this.state?.mode === "training") return 0;
+    const halfWidth = this.fortHalfWidth();
+    const backZ = this.fortBackZ();
+    if (Math.abs(x) < halfWidth + 1.8 && z > -14.2 && z < backZ + 1.8) return 0;
+    const variant = this.state?.terrainVariant ?? 0;
+    const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
+    const roadCenter = region.id === "canyon"
+      ? Math.sin((z + 35) * 0.055) * 4.2
+      : region.id === "mist"
+        ? Math.sin((z + 27) * 0.045) * 2.8
+        : region.id === "stardust"
+          ? Math.sin((z + 18) * 0.036) * 3.6
+          : Math.sin((z + 22) * 0.05) * 1.2;
+    const roadDistance = Math.abs(x - roadCenter);
+    const roadFlatten = z < -10 ? THREE.MathUtils.smoothstep(roadDistance, 2.8, 6.6) : 1;
+    const broad = Math.sin((x + variant * 11) * 0.052) * Math.cos((z - variant * 7) * 0.043);
+    const folds = Math.sin(x * 0.11 + z * 0.067 + variant * 1.7) * 0.42;
+    const mistCreek = x - (22 + Math.sin((z + 42) * 0.075) * 5.2);
+    const basin = region.id === "mist"
+      ? -Math.exp(-Math.pow(mistCreek / 13, 2)) * (0.55 + Math.max(0, Math.sin((z + 54) * 0.09)) * 0.48)
+      : 0;
+    const oasisCreek = x - (-28 + Math.sin((z + 45) * 0.06) * 6.4);
+    const channel = region.id === "oasis" ? -Math.exp(-Math.pow(oasisCreek / 8.6, 2)) * 0.62 : 0;
+    const canyonCenter = x - Math.sin((z + 34) * 0.047) * 5.8;
+    const canyon = region.id === "canyon"
+      ? Math.pow(THREE.MathUtils.smoothstep(Math.abs(canyonCenter), 12, 54), 1.55) * 4.4
+        + Math.max(0, Math.sin(Math.abs(canyonCenter) * 0.22 + z * 0.035)) * 0.62
+      : 0;
+    const plateau = region.id === "stardust"
+      ? THREE.MathUtils.smoothstep(Math.abs(x + Math.sin(z * 0.04) * 5), 18, 58) * 2.1
+        + Math.sin((x + z) * 0.045) * 0.36
+      : 0;
+    const edgeDistance = Math.max(0, Math.hypot(x * 0.84, z + 18) - 65);
+    return ((broad + folds) * profile.terrainAmplitude * 0.36 + basin + channel + canyon + plateau + Math.min(8, edgeDistance * 0.16)) * roadFlatten;
+  }
+
+  private buildContinuousTerrain(
+    region: RegionDefinition,
+    state: GameState,
+    terrainTexture: THREE.Texture | undefined,
+    nightPreview: boolean
+  ): THREE.Mesh {
+    const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
+    const resolution = this.effectiveQuality === "high" ? 76 : this.effectiveQuality === "medium" ? 58 : 42;
+    const geometry = new THREE.PlaneGeometry(220, 210, resolution, resolution);
     geometry.rotateX(-Math.PI / 2);
-    geometry.translate(0, -2.72, -13);
-    const shelf = new THREE.Mesh(
-      geometry,
-      new THREE.MeshStandardMaterial({
-        color: new THREE.Color(region.ground).lerp(new THREE.Color(0x263839), 0.38),
-        roughness: 1,
-        metalness: 0
-      })
-    );
-    shelf.castShadow = true;
-    shelf.receiveShadow = true;
-    this.world.add(shelf);
+    const position = geometry.getAttribute("position") as THREE.BufferAttribute;
+    const colors = new Float32Array(position.count * 3);
+    const packed = new THREE.Color(profile.surfaceLayers.find((entry) => entry.id === "packed")?.color ?? region.ground);
+    const rock = new THREE.Color(profile.surfaceLayers.find((entry) => entry.id === "rock")?.color ?? profile.boundaryColor);
+    const sand = new THREE.Color(profile.surfaceLayers.find((entry) => entry.id === "sand")?.color ?? region.ground);
+    const wet = new THREE.Color(profile.surfaceLayers.find((entry) => entry.id === "wet")?.color ?? region.ground);
+    const vegetation = new THREE.Color(profile.surfaceLayers.find((entry) => entry.id === "vegetation")?.color ?? region.ground);
+    for (let index = 0; index < position.count; index += 1) {
+      const x = position.getX(index);
+      const z = position.getZ(index) - 20;
+      const height = this.terrainHeightAt(x, z, region);
+      position.setY(index, height);
+      position.setZ(index, z);
+      const detail = Math.sin(x * 0.31 + state.terrainVariant) * Math.cos(z * 0.27 - state.terrainVariant * 0.6);
+      const slope = Math.abs(this.terrainHeightAt(x + 1.2, z, region) - height) + Math.abs(this.terrainHeightAt(x, z + 1.2, region) - height);
+      const color = packed.clone().lerp(sand, THREE.MathUtils.clamp(0.42 + detail * 0.18, 0.08, 0.82));
+      if (slope > 0.55 || Math.abs(height) > 2.6) color.lerp(rock, THREE.MathUtils.clamp(slope * 0.5, 0.22, 0.8));
+      const oasisWaterDistance = Math.abs(x - (-28 + Math.sin((z + 45) * 0.06) * 6.4));
+      const mistWaterDistance = Math.abs(x - (22 + Math.sin((z + 42) * 0.075) * 5.2));
+      if ((region.id === "oasis" && oasisWaterDistance < 11) || (region.id === "mist" && mistWaterDistance < 15)) {
+        color.lerp(wet, 0.62).lerp(vegetation, Math.max(0, detail) * 0.22);
+      }
+      color.multiplyScalar(0.94 + (detail + 1) * 0.025);
+      colors[index * 3] = color.r;
+      colors[index * 3 + 1] = color.g;
+      colors[index * 3 + 2] = color.b;
+    }
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+    const pbrSurface = region.id === "oasis" ? "sand" : "stone";
+    const pbrColor = this.library.worldTexture(`pbr-${pbrSurface}-color`);
+    const terrainColor = pbrColor ?? terrainTexture;
+    const terrain = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      vertexColors: true,
+      map: terrainColor ?? null,
+      normalMap: this.library.worldTexture(`pbr-${pbrSurface}-normal`) ?? null,
+      normalScale: new THREE.Vector2(region.id === "mist" ? 0.28 : 0.42, region.id === "mist" ? 0.28 : 0.42),
+      roughnessMap: this.library.worldTexture(`pbr-${pbrSurface}-roughness`) ?? null,
+      bumpMap: null,
+      bumpScale: 0,
+      roughness: 0.96
+    }));
+    terrain.receiveShadow = true;
+    terrain.userData.ground = true;
+    terrain.name = "continuous-terrain";
+    this.world.add(terrain);
+    this.buildHorizon(region, nightPreview);
+    return terrain;
   }
 
-  /**
-   * 原创远景只承担真实尺度、光照层次与区域氛围；前景仍是可交互的 Three.js 地形、建筑和单位。
-   * 不参与射线检测，因而不会抢走地面移动或资源交互点击。
-   */
-  private buildDistantPanorama(region: RegionDefinition, nightPreview: boolean): void {
-    if (!this.silkRoadPanoramaTexture) return;
-    const tint = nightPreview ? 0x2a3b48 : region.id === "mist" ? 0xaab9af : region.id === "canyon" ? 0xc58a70 : region.id === "stardust" ? 0x9187ab : 0xffffff;
-    const material = new THREE.MeshBasicMaterial({
-      map: this.silkRoadPanoramaTexture,
-      color: tint,
-      transparent: false,
-      fog: false,
-      side: THREE.DoubleSide
+  private buildHorizon(region: RegionDefinition, nightPreview: boolean): void {
+    const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
+    const skyGeometry = new THREE.SphereGeometry(235, 32, 18);
+    const skyPosition = skyGeometry.getAttribute("position") as THREE.BufferAttribute;
+    const skyColors = new Float32Array(skyPosition.count * 3);
+    const zenith = new THREE.Color(nightPreview ? 0x13242f : region.sky).multiplyScalar(nightPreview ? 0.72 : 1);
+    const horizon = new THREE.Color(nightPreview ? 0x27363d : profile.horizonColor);
+    for (let index = 0; index < skyPosition.count; index += 1) {
+      const t = THREE.MathUtils.clamp((skyPosition.getY(index) / 235 + 0.18) / 1.18, 0, 1);
+      const color = horizon.clone().lerp(zenith, Math.pow(t, 0.62));
+      skyColors[index * 3] = color.r;
+      skyColors[index * 3 + 1] = color.g;
+      skyColors[index * 3 + 2] = color.b;
+    }
+    skyGeometry.setAttribute("color", new THREE.BufferAttribute(skyColors, 3));
+    const sky = new THREE.Mesh(skyGeometry, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false }));
+    sky.position.set(0, -24, -18);
+    sky.raycast = () => undefined;
+    sky.renderOrder = -4;
+    this.world.add(sky);
+
+    const mountainMaterial = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(profile.horizonColor).multiplyScalar(nightPreview ? 0.58 : 0.82), roughness: 1
     });
-    const panorama = new THREE.Mesh(new THREE.PlaneGeometry(278, 156), material);
-    panorama.renderOrder = -2;
-    panorama.frustumCulled = false;
-    panorama.raycast = () => undefined;
-    this.world.add(panorama);
-    this.distantPanorama = panorama;
-    this.placeDistantPanorama();
+    const mountains = new THREE.Group();
+    mountains.name = "procedural-horizon";
+    const count = this.effectiveQuality === "low" ? 18 : 30;
+    for (let index = 0; index < count; index += 1) {
+      const angle = index / count * Math.PI * 2 + (this.state?.terrainVariant ?? 0) * 0.17;
+      const radius = 108 + (index * 23 % 38);
+      const height = 13 + (index * 17 % 24) + (region.id === "canyon" ? 8 : 0);
+      const mountain = makeHorizonMound(
+        mountainMaterial,
+        15 + (index % 5) * 3.4,
+        9 + (index % 4) * 2.2,
+        height,
+        index * 1.73 + (this.state?.terrainVariant ?? 0) * 4.2,
+        11 + index % 5
+      );
+      mountain.position.set(Math.cos(angle) * radius, -3.4, -20 + Math.sin(angle) * radius);
+      mountain.rotation.y = angle + 0.4;
+      mountain.raycast = () => undefined;
+      mountains.add(mountain);
+      if (index % 3 === 0) {
+        const shoulder = makeHorizonMound(
+          mountainMaterial,
+          11 + (index % 4) * 2.2,
+          7 + (index % 3) * 1.8,
+          height * 0.58,
+          index * 2.19 + 8.4,
+          9
+        );
+        shoulder.position.set(Math.cos(angle + 0.16) * 12, -0.2, Math.sin(angle + 0.16) * 7);
+        shoulder.rotation.y = -0.35;
+        shoulder.raycast = () => undefined;
+        mountain.add(shoulder);
+      }
+    }
+    this.world.add(mountains);
   }
 
-  /** 远景始终在镜头前方很远处，避免俯视角把它压到地面以下，同时不影响实际世界坐标。 */
-  private placeDistantPanorama(): void {
-    if (!this.distantPanorama) return;
-    const forward = new THREE.Vector3();
-    this.camera.getWorldDirection(forward);
-    this.distantPanorama.position.copy(this.camera.position).addScaledVector(forward, 136);
-    this.distantPanorama.quaternion.copy(this.camera.quaternion);
+  /** 区域天气使用少量 GPU 点精灵，跟随世界坐标而非 HUD；画质档位只调整数量。 */
+  private buildWeather(region: RegionDefinition): void {
+    const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
+    const preset = qualityPresets[this.effectiveQuality];
+    const count = Math.max(18, Math.round(qualityPresets.high.weatherParticles * profile.weatherDensity));
+    const visibleCount = Math.max(12, Math.round(preset.weatherParticles * profile.weatherDensity));
+    const positions = new Float32Array(count * 3);
+    for (let index = 0; index < count; index += 1) {
+      positions[index * 3] = ((index * 37) % 128) - 64;
+      positions[index * 3 + 1] = profile.weather === "mist" ? 0.8 + (index % 7) * 0.34 : 1 + (index % 19) * 0.72;
+      positions[index * 3 + 2] = ((index * 61) % 118) - 72;
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    geometry.setDrawRange(0, visibleCount);
+    const material = new THREE.PointsMaterial({
+      color: profile.weatherColor,
+      size: profile.weather === "mist" ? 2.8 : profile.weather === "starlight" ? 0.16 : 0.12,
+      transparent: true,
+      opacity: profile.weather === "mist" ? 0.1 : profile.weather === "dry" ? 0.25 : 0.4,
+      depthWrite: false,
+      sizeAttenuation: true
+    });
+    const particles = new THREE.Points(geometry, material);
+    particles.name = `weather-${profile.weather}`;
+    particles.frustumCulled = false;
+    particles.raycast = () => undefined;
+    this.weatherVelocity.set(
+      profile.weather === "wind" ? 5.6 : profile.weather === "dry" ? 1.3 : profile.weather === "mist" ? 0.45 : 0.15,
+      profile.weather === "starlight" ? 0.18 : 0,
+      profile.weather === "wind" ? 1.5 : 0.22
+    );
+    this.world.add(particles);
+    this.weatherParticles = particles;
+  }
+
+  /** 每个区域至少有一个可从默认镜头识别的地标，不再只在路线文字里出现。 */
+  private buildRegionLandmark(region: RegionDefinition): void {
+    const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
+    const root = new THREE.Group();
+    root.position.set(profile.landmarkPosition.x, this.terrainHeightAt(profile.landmarkPosition.x, profile.landmarkPosition.z, region), profile.landmarkPosition.z);
+    root.rotation.y = 0.28;
+    root.name = `landmark-${profile.landmark}`;
+    if (profile.landmark === "oasis-channel") {
+      // 水渠已作为连续地形的一部分生成；地标只保留渠边驿亭和取水设施，
+      // 避免再叠一张矩形水面。
+      const shrine = this.library.model("tower-hexagon-base", 0x8e795f, 0.34);
+      shrine.scale.setScalar(1.1);
+      shrine.position.set(0, 0, 0);
+      const canopy = this.library.model("tower-hexagon-roof", region.accent, 0.38);
+      canopy.scale.setScalar(1.18);
+      canopy.position.set(0, 4.2, 0);
+      const trough = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.5, 0.52, 16), new THREE.MeshStandardMaterial({ color: 0x776b5c, roughness: 0.96 }));
+      trough.position.set(3.1, 0.28, 0.8);
+      root.add(shrine, canopy, trough);
+    } else if (profile.landmark === "quarry-terraces") {
+      // The quarry is an excavated work site, not a slab placed on top of the terrain.
+      // Rock groups form an open crescent, leaving a readable haul road through the middle.
+      for (const [x, z, scale, rotation] of [
+        [-8.4, 2.8, 2.6, 0.3], [-5.2, 7.1, 2.2, 1.1], [-0.8, 9.4, 2.9, 2.2],
+        [4.2, 8.2, 2.35, 0.7], [8.1, 4.1, 2.65, 1.8]
+      ] as const) {
+        const outcrop = this.library.model("rocks-large", 0x7d4d3f, 0.38);
+        outcrop.position.set(x, 0, z);
+        outcrop.scale.setScalar(scale);
+        outcrop.rotation.y = rotation;
+        root.add(outcrop);
+      }
+      const timber = new THREE.MeshStandardMaterial({ color: 0x4d3124, roughness: 0.94 });
+      for (const x of [-2.5, 2.5]) {
+        const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.16, 4.2, 8), timber);
+        brace.position.set(x, 2.1, 2.1); brace.rotation.z = x < 0 ? -0.09 : 0.09; brace.castShadow = true; root.add(brace);
+      }
+      const crossbeam = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.16, 5.3, 8), timber);
+      crossbeam.position.set(0, 4.05, 2.1); crossbeam.rotation.z = Math.PI / 2; crossbeam.castShadow = true; root.add(crossbeam);
+      const haulBucket = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.42, 0.7, 10), new THREE.MeshStandardMaterial({ color: 0x4a4540, metalness: 0.32, roughness: 0.62 }));
+      haulBucket.position.set(0, 1.05, 2.1); haulBucket.castShadow = true; root.add(haulBucket);
+      const leftPier = this.library.model("rocks-large", 0x713c31, 0.46);
+      const rightPier = this.library.model("rocks-large", 0x713c31, 0.46);
+      leftPier.scale.set(4.2, 5.8, 3.6); rightPier.scale.set(4.6, 6.4, 3.9);
+      leftPier.position.set(-11, 0, -3.5); rightPier.position.set(10.5, 0, -2.2);
+      leftPier.rotation.y = 0.5; rightPier.rotation.y = -0.62;
+      const bridge = this.library.fittedModel("village-wall", [15.8, 2.4, 3.1], 0x713c31, 0.34);
+      bridge.position.set(0, 7.2, -3.2);
+      bridge.rotation.z = 0.03;
+      root.add(leftPier, rightPier, bridge);
+    } else if (profile.landmark === "harbor-beacon") {
+      const base = this.library.model("tower-hexagon-base", 0x61716c, 0.45);
+      const mid = this.library.model("tower-hexagon-mid", 0x61716c, 0.45);
+      const roof = this.library.model("tower-hexagon-roof", 0x4f6868, 0.5);
+      base.scale.setScalar(2.2);
+      mid.scale.setScalar(2.2); mid.position.y = 4.5;
+      roof.scale.setScalar(2.2); roof.position.y = 9;
+      const lamp = new THREE.PointLight(0xe5b35d, 2.4, 24, 2);
+      lamp.position.set(0, 10.5, 0);
+      root.add(base, mid, roof, lamp);
+      // 航标与抬高旧码头连接，断墙和装卸平台共同构成港口地标，而不是一根孤立塔。
+      for (const [x, z, rotation, length] of [[-7, 3.5, 0.08, 7.5], [7.2, 2.4, -0.22, 6.4], [1.8, 8.1, Math.PI / 2, 5.6]] as const) {
+        const pier = this.library.fittedModel("village-wall", [length, 1.1, 1.3], 0x536762, 0.24);
+        pier.position.set(x, -0.18, z);
+        pier.rotation.y = rotation;
+        root.add(pier);
+      }
+      const cargo = this.library.fittedModel("village-crate", [1.4, 1.2, 1.4], 0x514337, 0.12);
+      cargo.position.set(-5.8, 0.4, 2.6);
+      root.add(cargo);
+    } else {
+      // 星砂地标改为半埋的观测遗迹：破损石柱围成不完整弧线，中央仅保留一架
+      // 有明确用途的观星臂。删除此前三圈完美圆环，避免像调试辅助线。
+      for (let index = 0; index < 7; index += 1) {
+        const angle = -1.9 + index * 0.47;
+        const radius = 6.2 + Math.sin(index * 1.7) * 0.65;
+        const pillar = this.library.model("wall-pillar", 0x66636a, 0.3);
+        pillar.scale.setScalar(0.42 + (index % 3) * 0.07);
+        pillar.position.set(Math.cos(angle) * radius, index % 2 ? -0.25 : 0, Math.sin(angle) * radius);
+        pillar.rotation.y = -angle + 0.2;
+        pillar.rotation.z = (index - 3) * 0.018;
+        root.add(pillar);
+      }
+      const pedestal = this.library.model("tower-hexagon-base", 0x69636d, 0.32);
+      pedestal.scale.setScalar(0.92);
+      const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.25, 5.6, 10), new THREE.MeshStandardMaterial({ color: 0x756448, metalness: 0.48, roughness: 0.46 }));
+      arm.position.set(0, 3.1, 0);
+      arm.rotation.z = -0.54;
+      const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.55, 0.62, 12), new THREE.MeshStandardMaterial({ color: region.accent, emissive: region.accent, emissiveIntensity: 0.28, metalness: 0.38, roughness: 0.4 }));
+      lens.position.set(1.45, 5.35, 0);
+      lens.rotation.z = Math.PI * 0.5 - 0.54;
+      const bearing = new THREE.Mesh(new THREE.TorusGeometry(2.25, 0.16, 10, 32, Math.PI * 1.55), new THREE.MeshStandardMaterial({ color: 0x596b70, metalness: 0.58, roughness: 0.42 }));
+      bearing.position.set(0, 3.1, 0);
+      bearing.rotation.set(Math.PI / 2.7, 0.22, -0.38);
+      const braceA = this.library.fittedModel("village-balcony", [3.6, 1.1, 1.2], 0x4f5b61, 0.18);
+      const braceB = this.library.fittedModel("village-balcony", [3.6, 1.1, 1.2], 0x4f5b61, 0.18);
+      braceA.position.set(-2.1, 0.3, 0); braceA.rotation.y = Math.PI / 2;
+      braceB.position.set(2.1, 0.3, 0); braceB.rotation.y = Math.PI / 2;
+      root.add(pedestal, arm, lens, bearing, braceA, braceB);
+    }
+    this.world.add(root);
+  }
+
+  /** 区域模块必须对应真实布局，让玩家在迁营后能直接看出本次选择改变了什么。 */
+  private buildRegionModule(region: RegionDefinition): void {
+    if (!this.state?.regionModule) return;
+    const root = new THREE.Group();
+    const layout = this.currentFortLayout();
+    root.name = `region-module-${this.state.regionModule}`;
+    if (this.state.regionModule === "high-ground") {
+      const zone = layout.zones.find((entry) => entry.elevation >= 1.35) ?? layout.zones.find((entry) => entry.type === "defense")!;
+      const terrace = new THREE.Mesh(new THREE.CylinderGeometry(5.8, 7.1, 1.1, 16), new THREE.MeshStandardMaterial({ color: 0x766451, roughness: 0.98 }));
+      terrace.position.set(zone.position.x, 0.55, zone.position.z);
+      terrace.receiveShadow = true;
+      root.add(terrace);
+    } else if (this.state.regionModule === "side-gate") {
+      const arch = this.library.model("wall-doorway", region.accent, 0.38);
+      arch.scale.setScalar(2.05); arch.position.set(this.fortHalfWidth(), 0, 2.8); arch.rotation.y = Math.PI / 2;
+      root.add(arch);
+    } else if (this.state.regionModule === "caravan-yard") {
+      const zone = [...layout.zones].reverse().find((entry) => entry.type === "logistics")!;
+      const canopy = makeBuildModel("market", this.library, region);
+      canopy.scale.setScalar(0.72); canopy.position.set(zone.position.x - 3.1, 0, zone.position.z + 1.2);
+      root.add(canopy);
+      for (const [offsetX, offsetZ] of [[-2.2, -1.4], [2.1, -1.6], [-2.5, 2.1]] as const) {
+        const crate = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.9, 1), new THREE.MeshStandardMaterial({ color: 0x60422e, roughness: 0.94 }));
+        crate.position.set(zone.position.x + offsetX, 0.45, zone.position.z + offsetZ); crate.castShadow = true; root.add(crate);
+      }
+    } else {
+      const zone = layout.zones.find((entry) => entry.type === "siege") ?? layout.zones.find((entry) => entry.type === "defense")!;
+      const tower = this.library.model("siege-ballista", region.accent, 0.28);
+      tower.scale.setScalar(1.25); tower.position.set(zone.position.x + 3.3, 0, zone.position.z + 2.7); tower.rotation.y = Math.PI;
+      root.add(tower);
+      const gear = new THREE.Mesh(new THREE.TorusGeometry(1.15, 0.2, 8, 18), new THREE.MeshStandardMaterial({ color: 0x8f7955, metalness: 0.55, roughness: 0.38 }));
+      gear.position.set(zone.position.x + 1.9, 1.25, zone.position.z + 2.9); gear.rotation.y = Math.PI / 2; gear.name = "module-gear";
+      root.add(gear);
+    }
+    this.world.add(root);
   }
 
   private buildTrainingWorld(region: RegionDefinition, state: GameState): void {
@@ -1309,7 +1682,8 @@ export class SilkRoadGame {
         position: { x: Math.sin(angle) * distance, z: -5 - Math.cos(angle) * distance },
         target: "player", targetId: null, attackCooldown: 0, slowedUntil: 0, targetedUntil: 0,
         elite: isBoss && index === 0, lane: 0, formationRank: index, collisionRadius: type === "ram" ? 1.15 : 0.52, attackSlot: index, heightLayer: type === "flyer" ? 1 : 0,
-        bossKind: null, bossPhase: 0, attackRange: type === "archer" ? 15 : 1.6, windupUntil: 0
+        bossKind: null, bossPhase: 0, attackRange: type === "archer" ? 15 : 1.6, windupUntil: 0,
+        bossAction: "advance", bossSkillCooldown: 0, bossTelegraphUntil: 0
       };
       this.state!.enemies.push(enemy);
       this.createEnemyVisual(enemy);
@@ -1340,7 +1714,7 @@ export class SilkRoadGame {
         visual.object.rotation.y = Math.atan2(toPlayer.x, toPlayer.z);
       } else if ((enemy.type === "looter" || enemy.type === "flyer") && distance < preferredRange - 1.1) {
         visual.object.position.addScaledVector(moveDirection, -Math.min(2.4, enemy.combatSpeed) * delta);
-      } else if (enemy.attackCooldown <= 0) {
+      } else if (enemy.attackCooldown <= 0 && enemy.bossAction === "advance") {
         enemy.attackCooldown = enemy.type === "ram" ? 1.55 : 1.1;
         visual.rig?.attack();
         const damage = Math.max(1, enemy.damage - adventure.armor);
@@ -1431,34 +1805,54 @@ export class SilkRoadGame {
   }
 
   private buildWalls(region: RegionDefinition): void {
+    const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
     const add = (name: string, x: number, z: number, rotation: number, scale = 2.15, tintStrength = 0.34): THREE.Object3D => {
-      const object = this.library.model(name, 0x9c7654, tintStrength);
-      object.position.set(x, 0, z);
+      const object = this.library.model(name, profile.buildingPalette[0], tintStrength);
+      object.position.set(x, this.terrainHeightAt(x, z, region), z);
       object.rotation.y = rotation;
       object.scale.setScalar(scale);
       this.world.add(object);
       return object;
     };
-    const wallColor = region.id === "mist" ? 0x71807a : region.id === "canyon" ? 0x925e49 : 0x9b7958;
+    const wallColor = profile.buildingPalette[0];
     const placeWall = (length: number, x: number, z: number, rotation = 0): void => {
-      const segment = makeFortWallSegment(length, wallColor);
+      const segment = makeFortWallSegment(length, wallColor, this.library);
       segment.position.set(x, 0, z);
       segment.rotation.y = rotation;
       this.world.add(segment);
     };
-    placeWall(13.7, -11.15, -12);
-    placeWall(13.7, 11.15, -12);
+    const halfWidth = this.fortHalfWidth();
+    const gateHalfGap = 4.25;
+    const frontSegmentLength = halfWidth - gateHalfGap;
+    const frontCenter = (halfWidth + gateHalfGap) * 0.5;
+    placeWall(frontSegmentLength, -frontCenter, -12);
+    placeWall(frontSegmentLength, frontCenter, -12);
     const backZ = this.fortBackZ();
     const sideLength = backZ + 12;
     const sideCenter = (backZ - 12) * 0.5;
-    placeWall(36, 0, backZ);
-    placeWall(sideLength, -18, sideCenter, Math.PI / 2);
-    placeWall(sideLength, 18, sideCenter, Math.PI / 2);
-    add("wall-corner", -18, -12, Math.PI / 2, 2.3);
-    add("wall-corner", 18, -12, 0, 2.3);
-    add("wall-corner", -18, backZ, Math.PI, 2.3);
-    add("wall-corner", 18, backZ, -Math.PI / 2, 2.3);
-    const gate = makeGatehouse(region.accent, wallColor);
+    placeWall(halfWidth * 2, 0, backZ);
+    placeWall(sideLength, -halfWidth, sideCenter, Math.PI / 2);
+    placeWall(sideLength, halfWidth, sideCenter, Math.PI / 2);
+    add("wall-corner", -halfWidth, -12, Math.PI / 2, 2.3);
+    add("wall-corner", halfWidth, -12, 0, 2.3);
+    add("wall-corner", -halfWidth, backZ, Math.PI, 2.3);
+    add("wall-corner", halfWidth, backZ, -Math.PI / 2, 2.3);
+    if (this.state?.mode === "expedition" && this.state.expansionLevel >= 2) {
+      // Shallow projecting bastions create crossfire without adding a second gate.
+      for (const side of [-1, 1]) {
+        const bastionX = side * (halfWidth - 2.1);
+        const terrace = new THREE.Mesh(
+          new THREE.CylinderGeometry(4.35, 4.85, 1.05, 12),
+          new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.96 })
+        );
+        terrace.position.set(bastionX, 0.52, -9.7);
+        terrace.scale.z = 0.72;
+        terrace.receiveShadow = true;
+        terrace.castShadow = true;
+        this.world.add(terrace);
+      }
+    }
+    const gate = makeGatehouse(this.library, region.accent, wallColor);
     gate.position.set(0, 0, -12);
     this.world.add(gate);
     this.gateObject = gate;
@@ -1470,6 +1864,36 @@ export class SilkRoadGame {
     bannerLeft.position.y = 4.7;
     const bannerRight = add("flag-banner-long", 3.8, -11.5, 0, 1.7);
     bannerRight.position.y = 4.7;
+
+    // 驿站夜间照明使用真实空间中的壁挂火盆，而不是把整张地图统一提亮。
+    // 门楼两盏形成敌人进入防线时的第一段识别区，侧墙两盏照亮院内维修路线。
+    const addWallTorch = (x: number, z: number, rotation: number): void => {
+      const torch = new THREE.Group();
+      const metal = new THREE.MeshStandardMaterial({ color: 0x40352e, metalness: 0.42, roughness: 0.55 });
+      const bracket = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.07, 0.82, 7), metal);
+      bracket.rotation.x = Math.PI * 0.5;
+      bracket.position.set(0, 0, 0.35);
+      const bowl = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.23, 0.22, 10), metal);
+      bowl.position.set(0, 0.04, 0.72);
+      const flame = new THREE.Mesh(
+        new THREE.ConeGeometry(0.18, 0.62, 9),
+        new THREE.MeshStandardMaterial({ color: 0xffb04c, emissive: 0xf26d2f, emissiveIntensity: 2.4, roughness: 0.62 })
+      );
+      flame.position.set(0, 0.48, 0.72);
+      flame.name = "flame";
+      const light = new THREE.PointLight(0xff9a45, this.state?.phase === "night" ? 2.65 * this.nightBrightness : 0.28, 18, 1.75);
+      light.position.set(0, 0.58, 0.72);
+      light.name = "fort-torch-light";
+      light.userData.baseIntensity = 2.65;
+      torch.add(bracket, bowl, flame, light);
+      torch.position.set(x, this.terrainHeightAt(x, z, region) + 3.15, z);
+      torch.rotation.y = rotation;
+      this.world.add(torch);
+    };
+    addWallTorch(-5.15, -11.62, 0);
+    addWallTorch(5.15, -11.62, 0);
+    addWallTorch(-halfWidth + 0.35, -2.2, Math.PI * 0.5);
+    addWallTorch(halfWidth - 0.35, -2.2, -Math.PI * 0.5);
   }
 
   private buildFortifications(region: RegionDefinition): void {
@@ -1478,30 +1902,33 @@ export class SilkRoadGame {
       const root = new THREE.Group();
       const active = fortification.built && fortification.hp > 0;
       const foundationMaterial = new THREE.MeshStandardMaterial({ color: active ? 0x6d6253 : 0x81745f, roughness: 0.96 });
-      const foundation = new THREE.Mesh(new THREE.BoxGeometry(3.75, 0.18, 2.05), foundationMaterial);
+      const foundation = new THREE.Mesh(new THREE.BoxGeometry(5.15, 0.2, 2.45), foundationMaterial);
       foundation.position.y = 0.09;
       foundation.receiveShadow = true;
       foundation.castShadow = true;
       root.add(foundation);
       const cornerMaterial = new THREE.MeshStandardMaterial({ color: active ? 0x815436 : region.accent, roughness: 0.7, metalness: active ? 0.06 : 0.2 });
-      for (const [x, z] of [[-1.55, -0.72], [1.55, -0.72], [-1.55, 0.72], [1.55, 0.72]] as const) {
+      for (const [x, z] of [[-2.15, -0.86], [2.15, -0.86], [-2.15, 0.86], [2.15, 0.86]] as const) {
         const anchor = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.17, 0.17, 8), cornerMaterial);
         anchor.position.set(x, 0.25, z);
         anchor.castShadow = true;
         root.add(anchor);
       }
       if (active) {
+        const healthRatio = fortification.hp / Math.max(1, fortification.maxHp);
         const branchColor = fortification.branch === "sand" ? 0xb38a55 : fortification.branch === "oil" ? 0x3f4544 : 0x6f4930;
-        const material = new THREE.MeshStandardMaterial({ color: branchColor, roughness: 0.9, metalness: fortification.branch === "oil" ? 0.18 : 0.03 });
-        for (const offset of [-1.18, -0.4, 0.4, 1.18]) {
+        const material = new THREE.MeshStandardMaterial({ color: new THREE.Color(branchColor).multiplyScalar(healthRatio < 0.45 ? 0.63 : 1), roughness: 0.9, metalness: fortification.branch === "oil" ? 0.18 : 0.03 });
+        const spikeOffsets = healthRatio < 0.3 ? [-1.7, 0.55] : healthRatio < 0.62 ? [-1.7, -0.55, 1.7] : [-1.8, -0.6, 0.6, 1.8];
+        for (const offset of spikeOffsets) {
           const spike = new THREE.Mesh(new THREE.ConeGeometry(0.25, 2.15, 7), material);
           spike.rotation.x = Math.PI / 2;
           spike.position.set(offset, 0.88, 0);
           spike.castShadow = true;
           root.add(spike);
         }
-        const beam = new THREE.Mesh(new THREE.BoxGeometry(3.45, 0.26, 0.34), material);
-        beam.position.y = 0.52;
+        const beam = new THREE.Mesh(new THREE.BoxGeometry(4.7, 0.31, 0.4), material);
+        beam.position.y = 0.62;
+        beam.rotation.z = healthRatio < 0.45 ? 0.12 : 0;
         beam.castShadow = true;
         root.add(beam);
         if (fortification.level >= 3) {
@@ -1527,22 +1954,22 @@ export class SilkRoadGame {
         }
       } else {
         // 未建造时留下真实施工桩、系绳和醒目的预装骨架，明确告诉玩家“此处可安装拒马”。
-        // 这不是城内石台：三处位置严格位于城门外商道，直接点击任意一处即可施工。
+        // 这不是城内功能区：三处位置严格位于城门外商道，直接点击任意一处即可施工。
         const stakeMaterial = new THREE.MeshStandardMaterial({ color: 0x5c3b28, roughness: 0.95 });
-        for (const x of [-1.35, 1.35]) {
+        for (const x of [-2.05, 2.05]) {
           const stake = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.11, 1.55, 7), stakeMaterial);
           stake.position.set(x, 0.78, 0);
           stake.castShadow = true;
           root.add(stake);
         }
-        const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 2.72, 6), new THREE.MeshStandardMaterial({ color: 0xb99a63, roughness: 0.94 }));
+        const rope = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 4.12, 6), new THREE.MeshStandardMaterial({ color: 0xb99a63, roughness: 0.94 }));
         rope.rotation.z = Math.PI * 0.5;
         rope.position.y = 1.22;
         root.add(rope);
         // 两根斜置的预装木料让施工位从高处看也像“尚未完成的拒马”，而不是普通装饰旗。
         const previewBeamMaterial = new THREE.MeshStandardMaterial({ color: 0x96613d, roughness: 0.92 });
         for (const rotation of [-0.58, 0.58]) {
-          const previewBeam = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 2.7), previewBeamMaterial);
+          const previewBeam = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.17, 3.8), previewBeamMaterial);
           previewBeam.rotation.x = Math.PI * 0.5;
           previewBeam.rotation.z = rotation;
           previewBeam.position.set(0, 0.73, 0.08);
@@ -1557,14 +1984,16 @@ export class SilkRoadGame {
         flag.position.set(0.08, 4.48, -0.4);
         flag.scale.setScalar(1.08);
         root.add(flagPole, flag);
-        const marker = new THREE.Mesh(
-          new THREE.RingGeometry(1.32, 1.48, 28),
-          new THREE.MeshBasicMaterial({ color: 0xe5a840, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false })
-        );
-        marker.rotation.x = -Math.PI * 0.5;
-        marker.position.y = 0.205;
+        const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xe5a840, transparent: true, opacity: 0.82, depthWrite: false });
+        const marker = new THREE.Group();
         marker.name = "fortification-marker";
-        marker.raycast = () => undefined;
+        for (const [x, z, rotation] of [[-2.15, -0.92, 0], [2.15, -0.92, Math.PI / 2], [2.15, 0.92, Math.PI], [-2.15, 0.92, -Math.PI / 2]] as const) {
+          const angle = new THREE.Mesh(new THREE.BoxGeometry(0.84, 0.045, 0.12), markerMaterial);
+          angle.position.set(x, 0.205, z);
+          angle.rotation.y = rotation;
+          angle.raycast = () => undefined;
+          marker.add(angle);
+        }
         root.add(marker);
         const signal = new THREE.Mesh(new THREE.OctahedronGeometry(0.38, 0), new THREE.MeshStandardMaterial({ color: 0xe5a840, emissive: 0xe5a840, emissiveIntensity: 0.72, roughness: 0.48 }));
         signal.position.set(0, 5.62, -0.4);
@@ -1572,6 +2001,7 @@ export class SilkRoadGame {
         root.add(signal);
       }
       root.position.copy(fortificationPosition(fortification.lane));
+      root.position.y = this.terrainHeightAt(root.position.x, root.position.z, region);
       root.userData.fortificationId = fortification.id;
       root.traverse((child) => { child.userData.fortificationId = fortification.id; });
       this.world.add(root);
@@ -1585,7 +2015,10 @@ export class SilkRoadGame {
       color: new THREE.Color(region.floor).lerp(new THREE.Color(0xc1aa7a), 0.18),
       roughness: 0.98
     });
-    const columns = 14;
+    const halfWidth = this.fortHalfWidth();
+    const firstX = -halfWidth + 1.25;
+    const lastX = halfWidth - 1.25;
+    const columns = Math.ceil((lastX - firstX) / 2.35) + 1;
     const backZ = this.fortBackZ();
     const rows = Math.ceil((backZ + 9) / 1.76);
     const paving = new THREE.InstancedMesh(geometry, material, columns * rows);
@@ -1594,9 +2027,9 @@ export class SilkRoadGame {
     for (let row = 0; row < rows; row += 1) {
       for (let column = 0; column < columns; column += 1) {
         const offset = row % 2 === 0 ? 0 : 1.12;
-        const x = -15.7 + column * 2.35 + offset;
+        const x = firstX + column * 2.35 + offset;
         const z = -8.5 + row * 1.76;
-        if (x > 16.3 || z > backZ - 1.4) {
+        if (x > lastX || z > backZ - 1.4) {
           matrix.makeScale(0, 0, 0);
         } else {
           matrix.makeTranslation(x, 0.075, z);
@@ -1611,110 +2044,166 @@ export class SilkRoadGame {
   }
 
   private buildPadsAndCore(region: RegionDefinition): void {
-    const unlockedPads = this.state
-      ? this.state.mode === "survival"
-        ? 8
-        : Math.min(PAD_POSITIONS.length, 6 + this.state.expansionLevel * 2)
-      : PAD_POSITIONS.length;
-    PAD_POSITIONS.slice(0, unlockedPads).forEach((position, index) => {
+    const layout = this.currentFortLayout();
+    layout.zones.forEach((zone, index) => {
       const isFreshExpansion = this.isFreshExpansionPad(index);
-      const baseMaterial = new THREE.MeshStandardMaterial({
-        color: new THREE.Color(region.floor).lerp(new THREE.Color(0x4e463c), 0.34),
-        roughness: 0.9,
-        metalness: 0.03
-      });
-      // 可建位是驿站预留的石砌地基，而不是悬在地上的抽象圆圈：
-      // 带倒角感的方形基座、压实石面、铜条和固定钉能与商栈/床弩的尺度对应。
+      const size = zone.type === "siege" ? 5.8 : 4.7;
+      // The transparent hit surface is always raycastable, while the visible foundation
+      // only appears during build/relocation. The courtyard therefore reads as a real place,
+      // not a board covered in permanent game tokens.
       const pad = new THREE.Mesh(
-        new THREE.BoxGeometry(4.62, 0.34, 4.08),
-        baseMaterial
+        new THREE.BoxGeometry(size, 0.12, zone.type === "siege" ? 5.2 : 4.2),
+        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.001, depthWrite: false })
       );
-      pad.position.copy(position).setY(0.15);
-      pad.receiveShadow = true;
+      pad.position.copy(this.zonePosition(index)).add(new THREE.Vector3(0, 0.08, 0));
+      pad.rotation.y = zone.rotation;
       pad.userData.padIndex = index;
-      // 内嵌铜质压条与四枚固定钉也在未建造时给出明确但不刺眼的可放置提示。
-      const isTutorialTarget = this.tutorialPadIndex() === index;
-      const inlayMaterial = new THREE.MeshStandardMaterial({
-        color: isTutorialTarget || isFreshExpansion ? region.accent : 0x5d786e,
-        emissive: isTutorialTarget || isFreshExpansion ? region.accent : 0x000000,
-        emissiveIntensity: isTutorialTarget ? 0.45 : isFreshExpansion ? 0.25 : 0,
-        roughness: 0.45,
-        metalness: 0.46
-      });
-      const inlay = new THREE.Mesh(new THREE.BoxGeometry(3.56, 0.035, 3.08), inlayMaterial);
-      inlay.position.y = 0.19;
-      inlay.name = "pad-inlay";
-      inlay.receiveShadow = true;
-      pad.add(inlay);
-      const trimMaterial = new THREE.MeshStandardMaterial({ color: 0xa68b5d, roughness: 0.48, metalness: 0.52 });
-      for (const [x, z, width, depth] of [[0, -1.66, 3.78, 0.12], [0, 1.66, 3.78, 0.12], [-1.9, 0, 0.12, 3.42], [1.9, 0, 0.12, 3.42]] as const) {
-        const trim = new THREE.Mesh(new THREE.BoxGeometry(width, 0.06, depth), trimMaterial);
-        trim.position.set(x, 0.23, z);
-        trim.castShadow = true;
-        pad.add(trim);
-      }
-      for (const [x, z] of [[-1.52, -1.28], [1.52, -1.28], [-1.52, 1.28], [1.52, 1.28]] as const) {
-        const anchor = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.13, 0.17, 0.12, 8),
-          new THREE.MeshStandardMaterial({ color: 0x3c4544, roughness: 0.4, metalness: 0.72 })
+      pad.userData.zoneType = zone.type;
+      if (zone.elevation > 0.35) {
+        const support = new THREE.Mesh(
+          new THREE.CylinderGeometry(size * 0.54, size * 0.62, zone.elevation + 0.22, 12),
+          new THREE.MeshStandardMaterial({
+            color: new THREE.Color(region.floor).lerp(new THREE.Color(0x6d5b48), 0.45),
+            map: this.library.worldTexture("stone") ?? null,
+            roughness: 0.95
+          })
         );
-        anchor.position.set(x, 0.25, z);
-        pad.add(anchor);
+        support.position.copy(this.zonePosition(index));
+        support.position.y = (zone.elevation + 0.22) * 0.5 - 0.06;
+        support.receiveShadow = true;
+        support.castShadow = true;
+        support.userData.ground = true;
+        this.world.add(support);
       }
-      pad.userData.inlayMaterial = inlayMaterial;
+      const isTutorialTarget = this.tutorialPadIndex() === index;
+      const zoneMaterial = new THREE.MeshStandardMaterial({
+        color: region.accent,
+        emissive: region.accent,
+        emissiveIntensity: isTutorialTarget ? 0.48 : 0.16,
+        transparent: true,
+        opacity: 0.34,
+        roughness: 0.6,
+        metalness: 0.16,
+        depthWrite: false
+      });
+      const marker = new THREE.Group();
+      marker.name = "build-zone-marker";
+      const foundation = new THREE.Mesh(
+        new THREE.BoxGeometry(size - 0.32, 0.08, zone.type === "siege" ? 4.78 : 3.82),
+        zoneMaterial
+      );
+      foundation.position.y = 0.11;
+      marker.add(foundation);
+      const trimMaterial = new THREE.MeshStandardMaterial({ color: 0xa68b5d, roughness: 0.5, metalness: 0.45, transparent: true, opacity: 0.78 });
+      const halfX = size * 0.42;
+      const halfZ = zone.type === "siege" ? 2.02 : 1.55;
+      for (const [x, z] of [[-halfX, -halfZ], [halfX, -halfZ], [-halfX, halfZ], [halfX, halfZ]] as const) {
+        const anchor = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 0.16, 8), trimMaterial);
+        anchor.position.set(x, 0.22, z);
+        marker.add(anchor);
+      }
+      if (zone.type === "defense") {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(size - 0.7, 0.16, 0.18), trimMaterial);
+        rail.position.set(0, 0.28, -halfZ);
+        marker.add(rail);
+      } else if (zone.type === "logistics") {
+        for (const x of [-0.48, 0.48]) {
+          const skid = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.12, 2.9), trimMaterial);
+          skid.position.set(x, 0.2, 0);
+          marker.add(skid);
+        }
+      }
+      marker.visible = isTutorialTarget || isFreshExpansion;
+      pad.add(marker);
+      pad.userData.zoneMarker = marker;
+      pad.userData.zoneMaterial = zoneMaterial;
       if (isFreshExpansion) {
-        // 新院落并非只“多两个数字格子”：给未占用的新石台挂上可见的施工架，
-        // 直到玩家在此建造，才撤走施工标识并回归正常院落。
-        const marker = new THREE.Group();
-        marker.name = "expansion-pad-marker";
+        const expansionMarker = new THREE.Group();
+        expansionMarker.name = "expansion-pad-marker";
         const timber = new THREE.MeshStandardMaterial({ color: 0x715036, roughness: 0.94 });
         for (const x of [-1.42, 1.42]) {
           const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 2.05, 7), timber);
           post.position.set(x, 1.02, 1.22);
           post.castShadow = true;
-          marker.add(post);
+          expansionMarker.add(post);
         }
         const crossbar = new THREE.Mesh(new THREE.BoxGeometry(3.02, 0.11, 0.12), timber);
         crossbar.position.set(0, 1.86, 1.22);
         crossbar.castShadow = true;
-        marker.add(crossbar);
+        expansionMarker.add(crossbar);
         const banner = this.library.model("flag-banner-long", region.accent, 0.28);
         banner.position.set(0.18, 2.1, 1.18);
         banner.scale.setScalar(0.62);
-        marker.add(banner);
+        expansionMarker.add(banner);
         const signal = new THREE.Mesh(
           new THREE.OctahedronGeometry(0.22, 0),
           new THREE.MeshStandardMaterial({ color: 0xe4b04d, emissive: 0xe4b04d, emissiveIntensity: 0.55, roughness: 0.5 })
         );
         signal.name = "expansion-pad-signal";
         signal.position.set(0, 2.32, 1.16);
-        marker.add(signal);
-        pad.add(marker);
-        pad.userData.expansionMarker = marker;
+        expansionMarker.add(signal);
+        pad.add(expansionMarker);
+        pad.userData.expansionMarker = expansionMarker;
       }
       this.world.add(pad);
       this.buildPads.push(pad);
     });
-    const core = makeCore(region.accent);
+    const core = makeCore(region.accent, region.id, this.library);
     core.position.copy(CORE_POSITION);
     core.userData.core = true;
     this.world.add(core);
     this.coreObject = core;
+    this.refreshBuildZoneVisibility();
   }
 
   private fortBackZ(state = this.state): number {
-    const expansion = state?.mode === "expedition" ? state.expansionLevel : 0;
-    return 18 + Math.min(3, expansion) * 4;
+    if (!state) return 18;
+    return fortLayout(state.mode, state.expansionLevel, state.regionModule).depth;
+  }
+
+  private currentFortLayout(state = this.state) {
+    const active = state ?? createGame("expedition", "LAYOUT", this.meta);
+    return fortLayout(active.mode, active.expansionLevel, active.regionModule);
+  }
+
+  private normalizeBuildingZones(state: GameState): void {
+    if (state.mode === "training") return;
+    const layout = fortLayout(state.mode, state.expansionLevel, state.regionModule);
+    const occupied = new Set<number>();
+    const pending: BuildingState[] = [];
+    for (const building of state.buildings) {
+      const zone = layout.zones[building.padIndex];
+      if (zone && canBuildInZone(building.type, zone) && !occupied.has(building.padIndex)) occupied.add(building.padIndex);
+      else pending.push(building);
+    }
+    for (const building of pending) {
+      const fallback = layout.zones.findIndex((zone, index) => canBuildInZone(building.type, zone) && !occupied.has(index));
+      if (fallback >= 0) {
+        building.padIndex = fallback;
+        occupied.add(fallback);
+      }
+    }
+  }
+
+  private zonePosition(index: number): THREE.Vector3 {
+    const zone = this.currentFortLayout().zones[index];
+    if (!zone) return new THREE.Vector3();
+    return new THREE.Vector3(zone.position.x, zone.elevation, zone.position.z);
+  }
+
+  private fortHalfWidth(state = this.state): number {
+    if (!state) return 18;
+    return fortLayout(state.mode, state.expansionLevel, state.regionModule).width * 0.5;
   }
 
   private tutorialPadIndex(): number {
     if (!this.state || this.meta.seenTutorial) return -1;
-    if (this.state.tutorialStep === 0) return 0;
-    if (this.state.tutorialStep === 1) return 1;
+    if (this.state.tutorialStep === 0) return 4;
+    if (this.state.tutorialStep === 1) return 0;
     return -1;
   }
 
-  /** 当前扩建刚解锁、且还没有被建筑占用的两座石台。 */
+  /** 当前扩建刚解锁、且还没有被建筑占用的两处功能区。 */
   private isFreshExpansionPad(index: number): boolean {
     if (!this.state || this.state.mode !== "expedition" || this.state.expansionLevel <= 0) return false;
     const firstNewIndex = 6 + (this.state.expansionLevel - 1) * 2;
@@ -1724,133 +2213,151 @@ export class SilkRoadGame {
   }
 
   private refreshTutorialPads(): void {
+    this.refreshBuildZoneVisibility();
+  }
+
+  private refreshBuildZoneVisibility(): void {
+    if (!this.state) return;
     const target = this.tutorialPadIndex();
+    const relocatingBuilding = this.relocation
+      ? this.state.buildings.find((entry) => entry.id === this.relocation!.buildingId)
+      : undefined;
+    const activeType = relocatingBuilding?.type ?? this.selectedBuild;
+    const layout = this.currentFortLayout();
     this.buildPads.forEach((pad, index) => {
-      const material = pad.userData.inlayMaterial as THREE.MeshStandardMaterial | undefined;
-      if (!material) return;
+      const marker = pad.userData.zoneMarker as THREE.Group | undefined;
+      const material = pad.userData.zoneMaterial as THREE.MeshStandardMaterial | undefined;
+      const zone = layout.zones[index];
+      if (!material || !marker || !zone) return;
       const accent = regionById(this.state?.regionId ?? "oasis").accent;
       const expansionPad = this.isFreshExpansionPad(index);
-      material.color.set(index === target || expansionPad ? accent : 0x5d786e);
-      material.emissive.set(index === target || expansionPad ? accent : 0x000000);
-      material.emissiveIntensity = index === target ? 0.45 : expansionPad ? 0.25 : 0;
+      const occupied = this.state!.buildings.some((building) => building.padIndex === index && building.id !== relocatingBuilding?.id);
+      const valid = Boolean(activeType && canBuildInZone(activeType, zone) && !occupied);
+      marker.visible = index === target || expansionPad || Boolean(activeType);
+      const color = activeType ? (valid ? 0x58b98c : 0xbd5a49) : accent;
+      material.color.set(color);
+      material.emissive.set(color);
+      material.emissiveIntensity = index === target ? 0.5 : valid ? 0.3 : expansionPad ? 0.24 : 0.12;
+      material.opacity = activeType ? (valid ? 0.46 : 0.26) : 0.3;
     });
+  }
+
+  /** 贴合高度场的曲线带状网格，用于商道、车辙、水渠和湿地边缘。 */
+  private makeTerrainRibbon(
+    region: RegionDefinition,
+    points: Array<[number, number]>,
+    width: number,
+    material: THREE.Material,
+    yOffset: number,
+    seed = 0
+  ): THREE.Mesh {
+    const curve = new THREE.CatmullRomCurve3(points.map(([x, z]) => new THREE.Vector3(x, 0, z)), false, "centripetal", 0.34);
+    const samples = Math.max(18, (points.length - 1) * 14);
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    const indices: number[] = [];
+    for (let index = 0; index <= samples; index += 1) {
+      const t = index / samples;
+      const center = curve.getPointAt(t);
+      const tangent = curve.getTangentAt(t).setY(0).normalize();
+      const side = new THREE.Vector3(-tangent.z, 0, tangent.x);
+      const erosion = 1 + Math.sin(t * 13.7 + seed) * 0.075 + Math.sin(t * 37.1 + seed * 0.7) * 0.035;
+      for (const direction of [-1, 1]) {
+        const edgeNoise = 1 + Math.sin(t * (direction < 0 ? 23.4 : 29.2) + seed * direction) * 0.035;
+        const halfWidth = width * 0.5 * erosion * edgeNoise;
+        const x = center.x + side.x * halfWidth * direction;
+        const z = center.z + side.z * halfWidth * direction;
+        const y = this.terrainHeightAt(x, z, region) + yOffset;
+        positions.push(x, y, z);
+        uvs.push(direction < 0 ? 0 : 1, t * Math.max(2, points.length * 2.4));
+      }
+      if (index < samples) {
+        const base = index * 2;
+        indices.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
+    const ribbon = new THREE.Mesh(geometry, material);
+    ribbon.receiveShadow = true;
+    ribbon.userData.ground = true;
+    return ribbon;
   }
 
   private spawnScenery(region: RegionDefinition): void {
     const terrainVariant = this.state?.terrainVariant ?? 0;
+    const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
     // 底图有贴图时仍必须保留独立的主商道实体；只靠 ground 的颜色调整会被贴图覆盖，
     // 在俯视镜头里几乎看不出来。这条路从城门直达地图外缘，也是玩家离城后的第一条视觉引导。
-    const mainRoadBed = new THREE.Mesh(
-      new THREE.BoxGeometry(9.15, 0.036, 50.2),
-      new THREE.MeshStandardMaterial({ color: 0x655039, roughness: 1 })
-    );
-    mainRoadBed.position.set(0, 0.042, -36.6);
-    mainRoadBed.receiveShadow = true;
-    mainRoadBed.userData.ground = true;
-    const mainRoad = new THREE.Mesh(
-      new THREE.BoxGeometry(7.55, 0.048, 49.8),
+    const roadProfiles: Record<string, Array<[number, number]>> = {
+      oasis: [[0, -12.4], [0.5, -20], [-0.9, -29], [1.2, -39], [-0.9, -50], [0.7, -61], [0.2, -68]],
+      canyon: [[0, -12.4], [-1.4, -20], [2.6, -28], [4.1, -37], [0.8, -47], [-3.4, -58], [-1.1, -69]],
+      mist: [[0, -12.4], [1.6, -20], [2.8, -28], [-0.6, -36], [-2.7, -46], [0.2, -57], [2.1, -68]],
+      stardust: [[0, -12.4], [-1.2, -21], [-3.1, -30], [0.4, -40], [3.7, -49], [2.2, -59], [-0.6, -69]]
+    };
+    const mainRoadPoints = roadProfiles[region.id] ?? roadProfiles.oasis!;
+    const roadWidth = profile.roadStyle === "quarry-haul" ? 10.2 : profile.roadStyle === "raised-causeway" ? 8.4 : 9.25;
+    const mainRoadBed = this.makeTerrainRibbon(region, mainRoadPoints, roadWidth,
       new THREE.MeshStandardMaterial({
-        color: this.caravanRoadTexture ? 0xffffff : region.id === "mist" ? 0xa6b8ad : region.id === "canyon" ? 0xd29b67 : region.id === "stardust" ? 0xb0a0c4 : 0xe4be73,
-        map: this.caravanRoadTexture ?? null,
-        roughness: 0.87,
-        emissive: region.id === "mist" ? 0x17231f : region.id === "canyon" ? 0x27160d : region.id === "stardust" ? 0x21172a : 0x2d1a07,
-        emissiveIntensity: 0.11
-      })
-    );
-    mainRoad.position.set(0, 0.072, -36.6);
-    mainRoad.receiveShadow = true;
-    mainRoad.userData.ground = true;
+        color: new THREE.Color(profile.pathColor).multiplyScalar(0.62),
+        map: this.library.worldTexture(region.id === "oasis" ? "pbr-sand-color" : "pbr-stone-color") ?? null,
+        normalMap: this.library.worldTexture(region.id === "oasis" ? "pbr-sand-normal" : "pbr-stone-normal") ?? null,
+        normalScale: new THREE.Vector2(0.26, 0.26),
+        roughnessMap: this.library.worldTexture(region.id === "oasis" ? "pbr-sand-roughness" : "pbr-stone-roughness") ?? null,
+        roughness: 1
+      }), 0.025, terrainVariant + 0.4);
+    const mainRoad = this.makeTerrainRibbon(region, mainRoadPoints, roadWidth - 1.55,
+      new THREE.MeshStandardMaterial({
+        color: new THREE.Color(region.ground).lerp(
+          new THREE.Color(region.id === "mist" ? 0x7c8b83 : region.id === "canyon" ? 0x98634a : region.id === "stardust" ? 0x756b82 : 0xa18358),
+          0.34
+        ),
+        roughness: 1,
+        emissive: new THREE.Color(region.ground).multiplyScalar(0.16),
+        emissiveIntensity: 0.035
+      }), 0.06, terrainVariant + 1.7);
     this.world.add(mainRoadBed, mainRoad);
-    // 夯土之上嵌入稀疏石板。它能在顶部镜头里提供道路纹理和明确边界，
-    // 同时只是一组实例化网格，不会为移动端额外制造大量 draw call。
-    const paverRows = 32;
-    const paverColumns = 5;
-    const pavers = new THREE.InstancedMesh(
-      new THREE.BoxGeometry(1.22, 0.052, 0.84),
-      new THREE.MeshStandardMaterial({
-        color: region.id === "mist" ? 0xbac7bc : region.id === "canyon" ? 0xd6a66e : region.id === "stardust" ? 0xc0b0ce : 0xe8ca86,
-        roughness: 0.93
-      }),
-      paverRows * paverColumns
-    );
-    const paverMatrix = new THREE.Matrix4();
-    let paverIndex = 0;
-    for (let row = 0; row < paverRows; row += 1) {
-      for (let column = 0; column < paverColumns; column += 1) {
-        const stagger = row % 2 === 0 ? 0 : 0.25;
-        paverMatrix.makeTranslation(-2.9 + column * 1.45 + stagger, 0.12, -13.8 - row * 1.54);
-        pavers.setMatrixAt(paverIndex, paverMatrix);
-        paverIndex += 1;
-      }
-    }
-    pavers.instanceMatrix.needsUpdate = true;
-    pavers.receiveShadow = true;
-    pavers.userData.ground = true;
-    this.world.add(pavers);
-    const edgeMaterial = new THREE.MeshStandardMaterial({ color: 0x9c7950, roughness: 0.96 });
-    for (const x of [-4.02, 4.02]) {
-      const edge = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.075, 49.4), edgeMaterial);
-      edge.position.set(x, 0.09, -36.6);
-      edge.receiveShadow = true;
-      edge.userData.ground = true;
-      this.world.add(edge);
-    }
+    // 取消规则石板阵列与两条硬边线。它们在俯视视角下像梯子；商道现在依靠
+    // 连续夯土材质、自然宽度变化和车辙来形成边界。
     const rutMaterial = new THREE.MeshStandardMaterial({ color: 0x51483d, roughness: 1 });
     for (const x of [-1.75, 1.75]) {
-      const rut = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 52), rutMaterial);
-      rut.rotation.x = -Math.PI / 2;
-      rut.position.set(x, 0.025, -35);
-      rut.receiveShadow = true;
-      rut.userData.ground = true;
-      this.world.add(rut);
+      const rutPoints = mainRoadPoints.map(([roadX, z]) => [roadX + x, z] as [number, number]);
+      this.world.add(this.makeTerrainRibbon(region, rutPoints, 0.24, rutMaterial, 0.072, terrainVariant + x * 2));
     }
-    // 从城门向可采集物与事件点伸出的商道支路既是故事化布景，也是可走范围的视觉承诺。
-    // 玩家看见浅色道路就知道可以出去，而不会再对大片环境装饰逐一试错。
-    const pathBedMaterial = new THREE.MeshStandardMaterial({
-      color: region.id === "mist" ? 0x55716c : region.id === "canyon" ? 0x704b38 : region.id === "stardust" ? 0x5e5868 : 0x786041,
-      roughness: 1
+    // 侧路不再铺成数条彼此交叉的白色带。两条低对比度车辙从主道自然分开，
+    // 既表达商队使用痕迹，又让地表材质保持连续；资源由自身标记承担最后的引导。
+    const trailMaterial = new THREE.MeshStandardMaterial({
+      color: new THREE.Color(region.ground).lerp(new THREE.Color(region.id === "mist" ? 0x40534f : 0x4e3d31), 0.44),
+      roughness: 1,
+      transparent: true,
+      opacity: 0.72,
+      depthWrite: false
     });
-    const pathMaterial = new THREE.MeshStandardMaterial({
-      color: region.id === "mist" ? 0xa7bab0 : region.id === "canyon" ? 0xd1a06e : region.id === "stardust" ? 0xb7a5c4 : 0xe2c27e,
-      roughness: 0.9,
-      emissive: region.id === "mist" ? 0x162521 : region.id === "canyon" ? 0x2d1710 : region.id === "stardust" ? 0x21192b : 0x2b1b09,
-      emissiveIntensity: 0.1
-    });
-    const addPath = (points: Array<[number, number]>, width = 2.05): void => {
-      for (let index = 1; index < points.length; index += 1) {
-        const [fromX, fromZ] = points[index - 1]!;
-        const [toX, toZ] = points[index]!;
-        const dx = toX - fromX;
-        const dz = toZ - fromZ;
-        const length = Math.hypot(dx, dz);
-        const x = (fromX + toX) * 0.5;
-        const z = (fromZ + toZ) * 0.5;
-        const rotation = Math.atan2(dx, dz);
-        // 深色夯土路基 + 浅色石砂路面，远处也能一眼读出可探索的方向。
-        const bed = new THREE.Mesh(new THREE.BoxGeometry(width + 0.46, 0.028, length + 0.28), pathBedMaterial);
-        bed.position.set(x, 0.04, z);
-        bed.rotation.y = rotation;
-        bed.receiveShadow = true;
-        bed.userData.ground = true;
-        const segment = new THREE.Mesh(new THREE.BoxGeometry(width, 0.038, length + 0.16), pathMaterial);
-        segment.position.set(x, 0.058, z);
-        segment.rotation.y = rotation;
-        segment.receiveShadow = true;
-        segment.userData.ground = true;
-        this.world.add(bed, segment);
+    const addTrail = (points: Array<[number, number]>): void => {
+      const curve = new THREE.CatmullRomCurve3(points.map(([x, z]) => new THREE.Vector3(x, 0, z)), false, "centripetal", 0.34);
+      for (const lateral of [-0.62, 0.62]) {
+        const samples: Array<[number, number]> = [];
+        for (let index = 0; index <= 12; index += 1) {
+          const t = index / 12;
+          const center = curve.getPointAt(t);
+          const tangent = curve.getTangentAt(t).setY(0).normalize();
+          samples.push([center.x - tangent.z * lateral, center.z + tangent.x * lateral]);
+        }
+        this.world.add(this.makeTerrainRibbon(region, samples, 0.18, trailMaterial, 0.038, terrainVariant + lateral));
       }
     };
-    addPath([[0, -15.4], [0, -26.2], [-13.4, -30.2], [-18, -34]], 2.3);
-    addPath([[0, -15.4], [0, -25.3], [13.8, -29.2], [18, -34]], 2.3);
-    addPath([[0, -17.5], [-11.5, -19.2], [-24, -22]], 1.65);
-    addPath([[0, -17.5], [11.5, -19.2], [23, -20]], 1.65);
-    // 外圈分支刻意绕开水渠、采石坑与树丛的碰撞半径，保证道路表现和实际可走路线一致。
-    addPath([[-18, -34], [-12, -30], [-28, -13]], 1.25);
-    addPath([[18, -34], [12, -28], [28, -9]], 1.25);
-    addPath([[-18, -34], [-30, -42], [-42, -48]], 1.35);
-    addPath([[18, -34], [30, -40], [42, -46]], 1.35);
-    addPath([[-28, -13], [-36, 0], [-43, 14]], 1.2);
-    addPath([[28, -9], [36, 1], [43, 12]], 1.2);
+    const trailProfiles: Record<string, [Array<[number, number]>, Array<[number, number]>]> = {
+      oasis: [[[0, -28], [-10, -31], [-20, -37], [-30, -45], [-42, -50]], [[0, -28], [10, -31], [20, -36], [30, -43], [42, -48]]],
+      canyon: [[[2, -30], [-9, -35], [-18, -44], [-31, -52]], [[2, -29], [13, -33], [24, -39], [35, -47]]],
+      mist: [[[1, -29], [-8, -34], [-19, -39], [-31, -44]], [[1, -30], [12, -33], [22, -39], [33, -47]]],
+      stardust: [[[-2, -30], [-12, -34], [-21, -41], [-31, -50]], [[-1, -31], [10, -35], [22, -42], [34, -51]]]
+    };
+    const [leftTrail, rightTrail] = trailProfiles[region.id] ?? trailProfiles.oasis!;
+    addTrail(leftTrail);
+    addTrail(rightTrail);
 
     // 商道不再只是一条平面贴图：岔路处有明确的木制路标，路边有卸货的驼队补给点。
     // 它们放在道路边缘、不设置碰撞，不会把采集路线又变成绕障碍小游戏。
@@ -1871,14 +2378,12 @@ export class SilkRoadGame {
       const stripe = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.08, 0.132), roadPaint);
       stripe.position.set(0.52, 2.18, 0.07);
       marker.add(pole, cap, arrow, point, stripe);
-      marker.position.set(x, 0, z);
+      marker.position.set(x, this.terrainHeightAt(x, z, region), z);
       marker.rotation.y = heading;
       this.world.add(marker);
     };
-    addWayMarker(-7.3, -22.1, -0.78);
-    addWayMarker(7.2, -26.7, 0.72);
-    addWayMarker(-14.6, -30.7, -0.26);
-    for (const [x, z] of [[-4.7, -18], [4.7, -23], [-4.7, -30], [4.7, -37], [-4.7, -44]] as const) {
+    addWayMarker(-6.4, -28.8, -0.78);
+    for (const [x, z] of [[4.8, -20], [-4.8, -34], [4.8, -48]] as const) {
       const post = new THREE.Group();
       const pole = new THREE.Mesh(
         new THREE.CylinderGeometry(0.08, 0.12, 3.2, 8),
@@ -1893,7 +2398,7 @@ export class SilkRoadGame {
       );
       lantern.position.y = 3.1;
       post.add(lantern);
-      post.position.set(x, 0, z);
+      post.position.set(x, this.terrainHeightAt(x, z, region), z);
       this.world.add(post);
     }
     const scrubGeometry = new THREE.ConeGeometry(0.34, 0.74, 7);
@@ -1901,15 +2406,25 @@ export class SilkRoadGame {
       color: region.id === "mist" ? 0x536f66 : region.id === "canyon" ? 0x765d3f : 0x6d7446,
       roughness: 1
     });
-    const scrub = new THREE.InstancedMesh(scrubGeometry, scrubMaterial, 88);
+    const scrubCount = Math.max(36, Math.round(88 * qualityPresets[this.effectiveQuality].sceneryDensity));
+    const scrub = new THREE.InstancedMesh(scrubGeometry, scrubMaterial, scrubCount);
     const matrix = new THREE.Matrix4();
-    for (let index = 0; index < 88; index += 1) {
-      const side = index % 2 === 0 ? -1 : 1;
-      const x = side * (10 + (index * 7 % 51));
-      const z = -66 + (index * 13 % 105);
+    const ecologicalCenters: Record<string, Array<[number, number, number]>> = {
+      oasis: [[-28, -39, 13], [-43, -50, 10], [37, -30, 13]],
+      canyon: [[-42, -47, 12], [38, -39, 14], [-49, 6, 11]],
+      mist: [[21, -38, 15], [-31, -31, 11], [39, 3, 12]],
+      stardust: [[-29, -34, 13], [30, -36, 13], [42, 8, 11]]
+    };
+    const centers = ecologicalCenters[region.id] ?? ecologicalCenters.oasis!;
+    for (let index = 0; index < scrubCount; index += 1) {
+      const [centerX, centerZ, spread] = centers[index % centers.length]!;
+      const angle = index * 2.399 + terrainVariant * 0.7;
+      const radius = spread * (0.18 + ((index * 37) % 83) / 100);
+      const x = centerX + Math.cos(angle) * radius;
+      const z = centerZ + Math.sin(angle) * radius * 0.72;
       const scale = 0.55 + (index % 5) * 0.12;
       matrix.compose(
-        new THREE.Vector3(x, 0.35 * scale, z),
+        new THREE.Vector3(x, this.terrainHeightAt(x, z, region) + 0.35 * scale, z),
         new THREE.Quaternion().setFromEuler(new THREE.Euler(0, index * 0.73, 0)),
         new THREE.Vector3(scale, scale, scale)
       );
@@ -1918,73 +2433,6 @@ export class SilkRoadGame {
     scrub.castShadow = true;
     scrub.receiveShadow = true;
     this.world.add(scrub);
-
-    const makeNaturalTree = (scale: number, seed: number): THREE.Group => {
-      const tree = new THREE.Group();
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.2 * scale, 0.34 * scale, 3.4 * scale, 12),
-        new THREE.MeshStandardMaterial({ color: 0x5b3e2a, roughness: 0.98 })
-      );
-      trunk.position.y = 1.7 * scale;
-      trunk.rotation.z = Math.sin(seed) * 0.04;
-      trunk.castShadow = true;
-      tree.add(trunk);
-      const leafMaterial = new THREE.MeshStandardMaterial({ color: region.id === "mist" ? 0x3f685e : 0x4f7449, roughness: 0.92 });
-      if (region.id === "oasis") {
-        for (let index = 0; index < 9; index += 1) {
-          const leaf = new THREE.Mesh(new THREE.CapsuleGeometry(0.11 * scale, 1.55 * scale, 4, 8), leafMaterial);
-          const angle = index / 9 * Math.PI * 2 + seed;
-          leaf.position.set(Math.cos(angle) * 0.75 * scale, 3.65 * scale, Math.sin(angle) * 0.75 * scale);
-          leaf.rotation.z = Math.PI * 0.36;
-          leaf.rotation.y = -angle;
-          leaf.castShadow = true;
-          tree.add(leaf);
-        }
-      } else {
-        for (const [x, y, z, size] of [[-0.45, 3.55, 0.1, 0.92], [0.42, 3.65, -0.16, 1], [0.02, 4.25, 0.12, 0.88], [-0.08, 3.45, -0.48, 0.82]] as const) {
-          const crown = new THREE.Mesh(new THREE.IcosahedronGeometry(size * scale, 2), leafMaterial);
-          crown.position.set(x * scale, y * scale, z * scale);
-          crown.scale.set(1.15, 0.82, 1.05);
-          crown.rotation.y = seed + x;
-          crown.castShadow = true;
-          tree.add(crown);
-        }
-      }
-      return tree;
-    };
-
-    const positions: Array<[string, number, number, number, number]> = [
-      ["rocks-large", -34, -28, 1.8, 0.4],
-      ["rocks-small", 33, -23, 2.1, 1.7],
-      ["tree-large", -31, 12, 1.9, 2.2],
-      ["tree-small", 29, 18, 2.2, 0.8],
-      ["rocks-large", 34, 26, 1.5, 2.8],
-      ["tree-small", -34, -3, 1.8, 1.1],
-      ["rocks-small", -21, -27, 1.25, 2.4],
-      ["rocks-small", 22, -31, 1.35, 0.3]
-    ];
-    for (const [name, x, z, scale, rotation] of positions) {
-      const object = name.startsWith("tree")
-        ? makeNaturalTree(scale * 0.62, x * 0.17 + z * 0.09)
-        : makeWindWornMound(
-            new THREE.MeshStandardMaterial({ color: new THREE.Color(region.ground).lerp(new THREE.Color(0x665b51), 0.5), roughness: 0.98 }),
-            scale * 1.7,
-            scale * 1.25,
-            scale * 1.15,
-            x * 0.12 + z * 0.07,
-            22
-          );
-      object.position.set(x, 0, z);
-      object.rotation.y = rotation;
-      this.world.add(object);
-    }
-
-    const variantScenery = [
-      [["rocks-large", -25, -15, 1.65], ["tree-small", 25, -9, 1.4]],
-      [["tree-large", -27, -12, 1.55], ["rocks-small", 24, -18, 1.75]],
-      [["rocks-small", -30, -20, 2.1], ["rocks-large", 28, -11, 1.45]],
-      [["tree-small", -24, -26, 1.9], ["tree-large", 27, -24, 1.45]]
-] as const;
 
 /**
  * 轻量的风蚀地貌。由两层不规则环和一个起伏顶点组成，远看有自然沙脊/岩坡轮廓，
@@ -1998,10 +2446,10 @@ function makeWindWornMound(
   seed: number,
   segments = 16
 ): THREE.Mesh {
-  const vertices: number[] = [0, height, 0];
+  const vertices: number[] = [Math.sin(seed) * radiusX * 0.08, height * 0.94, Math.cos(seed * 0.8) * radiusZ * 0.07];
   const indices: number[] = [];
   const wobble = (index: number, factor: number): number => 1 + Math.sin(seed * 1.73 + index * 2.41) * factor + Math.cos(seed * 0.67 + index * 1.19) * factor * 0.58;
-  for (const [radius, y, factor] of [[0.43, height * 0.52, 0.11], [1, 0, 0.16]] as const) {
+  for (const [radius, y, factor] of [[0.58, height * 0.76, 0.08], [1, 0, 0.16]] as const) {
     for (let index = 0; index < segments; index += 1) {
       const angle = index / segments * Math.PI * 2;
       const scale = wobble(index, factor);
@@ -2025,36 +2473,8 @@ function makeWindWornMound(
   mound.receiveShadow = true;
   return mound;
 }
-    for (const [name, x, z, scale] of variantScenery[terrainVariant]!) {
-      const object = name.startsWith("tree")
-        ? makeNaturalTree(scale * 0.56, terrainVariant + x * 0.11)
-        : makeWindWornMound(
-            new THREE.MeshStandardMaterial({ color: new THREE.Color(region.ground).lerp(new THREE.Color(0x6d6054), 0.46), roughness: 0.98 }),
-            scale * 1.65,
-            scale * 1.18,
-            scale,
-            terrainVariant + x * 0.09 + z * 0.05,
-            20
-          );
-      object.position.set(x, 0, z);
-      object.rotation.y = (terrainVariant + x * 0.13) % Math.PI;
-      this.world.add(object);
-    }
-
-    const duneMaterial = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(region.ground).lerp(new THREE.Color(region.id === "canyon" ? 0x723e34 : 0xc1a36b), 0.28),
-      roughness: 1
-    });
-    for (const [x, z, sx, sz] of [
-      [-30, -40, 8, 5],
-      [29, -38, 10, 6],
-      [-37, 30, 7, 5],
-      [38, 31, 9, 6]
-    ] as const) {
-      const dune = makeWindWornMound(duneMaterial, sx, sz, 1.55, x * 0.17 + z * 0.11);
-      dune.position.set(x, 0.015, z);
-      this.world.add(dune);
-    }
+    // 近郊不再额外压四块独立沙丘网格。起伏已经写入连续高度场，重复叠加只会
+    // 形成与地面颜色不一致的多边形“贴片”，并挤占资源的自然接近空间。
 
     // 地图边缘用真实体积的山脊收口：它只承担远景，不抢占驿站与城外采集区的活动空间。
     const ridgeMaterial = new THREE.MeshStandardMaterial({
@@ -2069,7 +2489,7 @@ function makeWindWornMound(
     ];
     for (const [x, z, height, width, rotation] of ridgeShapes) {
       const base = makeWindWornMound(ridgeMaterial, width, width * 0.64, height, x * 0.09 + z * 0.07, 18);
-      base.position.set(x, 0.02, z);
+      base.position.set(x, this.terrainHeightAt(x, z, region) + 0.02, z);
       base.rotation.y = rotation;
       this.world.add(base);
       const cap = makeWindWornMound(
@@ -2097,54 +2517,39 @@ function makeWindWornMound(
     ];
     for (const [x, z, height, width] of boundaryRidges) {
       const ridge = makeWindWornMound(boundaryMaterial, width, width * 0.82, height, x * 0.13 + z * 0.1, 12);
-      ridge.position.set(x, 0.01, z);
+      ridge.position.set(x, this.terrainHeightAt(x, z, region) + 0.01, z);
       this.world.add(ridge);
     }
-
-    const caravan = makeBuildModel("market", this.library, region);
-    caravan.position.set(-10.5, 0, -27);
-    caravan.rotation.y = 0.28;
-    caravan.scale.setScalar(0.62);
-    this.world.add(caravan);
-    const supplyTent = makeBuildModel("market", this.library, region);
-    supplyTent.position.set(10.8, 0, -29);
-    supplyTent.rotation.y = -0.42;
-    supplyTent.scale.setScalar(0.5);
-    this.world.add(supplyTent);
 
     // 两个商队停靠点把“城门外道路”变成可被相信的商路：货车、货箱、地毯与油灯
     // 都避开可走路径，仅承担生活痕迹、比例尺和故事氛围。
     const addCaravanStop = (x: number, z: number, rotation: number, clothColor: number): void => {
       const stop = new THREE.Group();
-      const wood = new THREE.MeshStandardMaterial({ color: 0x5a3d29, roughness: 0.92 });
       const darkWood = new THREE.MeshStandardMaterial({ color: 0x3d2a20, roughness: 0.96 });
       const fabric = new THREE.MeshStandardMaterial({ color: clothColor, roughness: 0.94, side: THREE.DoubleSide });
       const brass = new THREE.MeshStandardMaterial({ color: 0xb98b48, metalness: 0.48, roughness: 0.48, emissive: 0x4f3215, emissiveIntensity: 0.22 });
-      const wagonBed = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.42, 1.55), wood);
-      wagonBed.position.set(0, 1.03, 0);
-      wagonBed.castShadow = true;
-      wagonBed.receiveShadow = true;
-      stop.add(wagonBed);
-      for (const wheelX of [-1.15, 1.15]) {
-        for (const wheelZ of [-0.88, 0.88]) {
-          const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.56, 0.18, 14), darkWood);
-          wheel.rotation.x = Math.PI * 0.5;
-          wheel.position.set(wheelX, 0.55, wheelZ);
-          wheel.castShadow = true;
-          stop.add(wheel);
+      if (this.library.hasModel("village-wagon")) {
+        const wagon = this.library.fittedModel("village-wagon", [3.8, 2.25, 2.35], 0x6e4931, 0.08);
+        wagon.rotation.y = Math.PI * 0.5;
+        stop.add(wagon);
+      }
+      if (this.library.hasModel("village-crate")) {
+        for (const [boxX, boxZ, scale] of [[-2.05, 1.3, 0.76], [-1.4, 1.48, 0.58], [1.68, 1.16, 0.52]] as const) {
+          const crate = this.library.fittedModel("village-crate", [scale, scale, scale], 0x76513a, 0.07);
+          crate.position.set(boxX, 0.02, boxZ);
+          crate.rotation.y = boxX * 0.4;
+          stop.add(crate);
         }
       }
-      for (const [boxX, boxZ, scale] of [[-0.55, 0, 0.72], [0.55, -0.12, 0.58], [1.68, 0.6, 0.52]] as const) {
-        const crate = new THREE.Mesh(new THREE.BoxGeometry(scale, scale, scale), wood);
-        crate.position.set(boxX, 1.34 + scale * 0.5, boxZ);
-        crate.rotation.y = boxX * 0.8;
-        crate.castShadow = true;
-        crate.receiveShadow = true;
-        stop.add(crate);
+      if (this.library.hasModel("village-fence")) {
+        const hitchingRail = this.library.fittedModel("village-fence", [3.1, 1.22, 0.38], 0x5b3d29, 0.06);
+        hitchingRail.position.set(-2.15, 0.02, -1.28);
+        hitchingRail.rotation.y = 0.14;
+        stop.add(hitchingRail);
       }
       const rug = new THREE.Mesh(new THREE.PlaneGeometry(2.5, 1.45), fabric);
       rug.rotation.x = -Math.PI * 0.5;
-      rug.position.set(-1.75, 0.035, 1.22);
+      rug.position.set(-0.75, 0.035, 2.0);
       rug.receiveShadow = true;
       stop.add(rug);
       const lampPole = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.08, 2.35, 8), darkWood);
@@ -2157,80 +2562,117 @@ function makeWindWornMound(
       const glow = new THREE.PointLight(0xe1a955, 0.7, 5.5, 2);
       glow.position.copy(lamp.position);
       stop.add(glow);
-      stop.position.set(x, 0, z);
+      stop.position.set(x, this.terrainHeightAt(x, z, region), z);
       stop.rotation.y = rotation;
       this.world.add(stop);
     };
-    addCaravanStop(-14.8, -28.2, 0.38, region.accent);
-    addCaravanStop(14.6, -29.4, -0.34, new THREE.Color(region.accent).offsetHSL(0.06, -0.06, 0.04).getHex());
-
-    for (const x of [-4.4, 4.4]) {
-      const marker = this.library.model("wall-pillar", region.accent, 0.32);
-      marker.position.set(x, 0, -30.5);
-      marker.scale.setScalar(1.45);
-      this.world.add(marker);
-      const banner = this.library.model("flag-banner-long", region.accent, 0.5);
-      banner.position.set(x, 4.1, -30.2);
-      banner.scale.setScalar(1.2);
-      this.world.add(banner);
-    }
-
     if (region.id === "oasis") {
-      for (const [x, z] of [[-19, -21], [-16, -32], [17, -24], [20, -34]] as const) {
+      // 一个有明确停靠朝向的补给点即可建立商路生活感；多个货车散在交叉口会像随机关卡道具。
+      addCaravanStop(15.8, -43.5, -0.22, region.accent);
+      for (const [x, z, scale] of [[-18, -34, 1.35], [-27, -31, 1.55], [-34, -42, 1.65], [-42, -47, 1.35]] as const) {
         const tree = this.library.model("tree-large", 0x3e8b63, 0.18);
-        tree.position.set(x, 0, z);
-        tree.scale.setScalar(1.55);
+        tree.position.set(x, this.terrainHeightAt(x, z, region), z);
+        tree.scale.setScalar(scale);
         this.world.add(tree);
       }
-      const water = new THREE.Mesh(
-        new THREE.CircleGeometry(4.5, 30),
-        new THREE.MeshStandardMaterial({ color: 0x4d8f8b, roughness: 0.22, metalness: 0.06 })
-      );
-      water.rotation.x = -Math.PI / 2;
-      water.scale.set(1.6, 0.75, 1);
-      water.position.set(-23, 0.04, -36);
-      this.world.add(water);
+      const bankMaterial = new THREE.MeshStandardMaterial({ color: 0x506f55, roughness: 0.96, transparent: true, opacity: 0.92 });
+      const waterMaterial = new THREE.MeshStandardMaterial({ color: 0x397f7c, roughness: 0.2, metalness: 0.08, transparent: true, opacity: 0.9 });
+      this.world.add(this.makeTerrainRibbon(region, [[-51, -53], [-42, -48], [-34, -43], [-27, -38], [-23, -36]], 6.1, bankMaterial, 0.018, terrainVariant + 11));
+      this.world.add(this.makeTerrainRibbon(region, [[-51, -53], [-42, -48], [-34, -43], [-27, -38], [-23, -36]], 3.7, waterMaterial, 0.045, terrainVariant + 13));
+      // 水渠在地势最低处逐渐收窄渗入沙地；不叠加任何圆池或加宽色块，避免硬边水面。
     } else if (region.id === "mist") {
       for (const [x, z, rotation] of [[-23, -24, 0.2], [20, -26, 1.1], [-27, -36, 0.6]] as const) {
         const ruin = this.library.model("wall-doorway", 0x687b75, 0.45);
-        ruin.position.set(x, 0, z);
+        ruin.position.set(x, this.terrainHeightAt(x, z, region), z);
         ruin.rotation.y = rotation;
         ruin.scale.setScalar(1.45);
         this.world.add(ruin);
       }
-      const wetGround = new THREE.Mesh(
-        new THREE.CircleGeometry(7.5, 28),
-        new THREE.MeshStandardMaterial({ color: 0x456b6d, roughness: 0.32 })
-      );
-      wetGround.rotation.x = -Math.PI / 2;
-      wetGround.scale.set(1.55, 0.62, 1);
-      wetGround.position.set(22, 0.035, -37);
-      this.world.add(wetGround);
+      const marshBank = new THREE.MeshStandardMaterial({ color: 0x45615d, roughness: 0.88, transparent: true, opacity: 0.78 });
+      this.world.add(this.makeTerrainRibbon(region, [[44, -54], [36, -49], [30, -43], [22, -37], [18, -30]], 10.5, marshBank, 0.018, terrainVariant + 17));
+      const marshWater = new THREE.MeshStandardMaterial({ color: 0x416d70, roughness: 0.3, transparent: true, opacity: 0.72 });
+      this.world.add(this.makeTerrainRibbon(region, [[44, -54], [36, -49], [30, -43], [22, -37], [18, -30]], 4.4, marshWater, 0.04, terrainVariant + 19));
+      // 旧港设施沿水缘成组出现，抬高石堤与系船桩共同说明这里曾是装卸区。
+      for (const [x, z, rotation] of [[29, -42, 0.55], [34, -48, 0.7]] as const) {
+        const dock = new THREE.Group();
+        const wall = this.library.fittedModel("village-wall", [5.4, 0.82, 1.15], 0x52645f, 0.22);
+        wall.rotation.y = rotation;
+        dock.add(wall);
+        for (const offset of [-1.8, 1.8]) {
+          const bollard = this.library.fittedModel("village-chimney", [0.48, 0.9, 0.48], 0x42514d, 0.2);
+          bollard.position.set(Math.cos(rotation) * offset, 0.1, -Math.sin(rotation) * offset);
+          dock.add(bollard);
+        }
+        dock.position.set(x, this.terrainHeightAt(x, z, region) + 0.02, z);
+        this.world.add(dock);
+      }
     } else if (region.id === "canyon") {
-      for (const [x, z, scale] of [[-25, -22, 2.7], [26, -27, 3.1], [-22, -38, 2.4], [24, -41, 2.2]] as const) {
+      for (const [x, z, scale] of [[-49, -57, 2.7], [-36, -61, 3.1], [36, -58, 2.4], [49, -53, 2.2]] as const) {
         const rock = this.library.model("rocks-large", 0x8d4c3d, 0.48);
-        rock.position.set(x, 0, z);
+        rock.position.set(x, this.terrainHeightAt(x, z, region), z);
         rock.scale.setScalar(scale);
         this.world.add(rock);
       }
+      // 运输架、绞盘和整备石堆集中在采石支路末端，避免矿场道具散落到主商道。
+      const quarryYard = new THREE.Group();
+      const wagon = this.library.fittedModel("village-wagon", [3.6, 2.1, 2.3], 0x5c3828, 0.18);
+      wagon.rotation.y = Math.PI * 0.5;
+      quarryYard.add(wagon);
+      for (const x of [-2.5, 2.5]) {
+        const brace = this.library.fittedModel("village-fence", [3.5, 1.7, 0.52], 0x4b2e23, 0.2);
+        brace.position.set(x, 0, 2.2);
+        brace.rotation.y = x < 0 ? 0.2 : -0.2;
+        quarryYard.add(brace);
+      }
+      const cutStone = this.library.fittedModel("village-wall", [4.2, 1.25, 1.4], 0x8b4d3b, 0.25);
+      cutStone.position.set(0, 0, 4.15);
+      quarryYard.add(cutStone);
+      quarryYard.position.set(27, this.terrainHeightAt(27, -42, region), -42);
+      quarryYard.rotation.y = -0.42;
+      this.world.add(quarryYard);
     } else {
       for (const [x, z] of [[-21, -25], [22, -27], [-17, -38], [18, -40]] as const) {
-        const crystal = new THREE.Mesh(
-          new THREE.OctahedronGeometry(1.15, 0),
-          new THREE.MeshStandardMaterial({ color: region.accent, emissive: region.accent, emissiveIntensity: 0.36, roughness: 0.38 })
-        );
-        crystal.position.set(x, 1.1, z);
-        crystal.scale.y = 2.2;
-        crystal.castShadow = true;
-        this.world.add(crystal);
+        const cluster = new THREE.Group();
+        const rock = this.library.model("rocks-large", 0x4f4b55, 0.28);
+        rock.scale.setScalar(0.62);
+        cluster.add(rock);
+        const crystalMaterial = new THREE.MeshStandardMaterial({ color: region.accent, emissive: region.accent, emissiveIntensity: 0.25, roughness: 0.42 });
+        for (const [offsetX, offsetZ, height, tilt] of [[-0.38, 0.12, 1.45, -0.2], [0.12, -0.18, 2.05, 0.08], [0.48, 0.22, 1.15, 0.22]] as const) {
+          const shard = new THREE.Mesh(new THREE.ConeGeometry(0.24, height, 6), crystalMaterial);
+          shard.position.set(offsetX, height * 0.5 + 0.22, offsetZ);
+          shard.rotation.z = tilt;
+          shard.castShadow = true;
+          cluster.add(shard);
+        }
+        cluster.position.set(x, this.terrainHeightAt(x, z, region), z);
+        cluster.rotation.y = (x + z) * 0.11;
+        this.world.add(cluster);
       }
+      // 天文维护站沿古观测轴布置，仪器、货箱与晶脉各有用途，不作为随机发光装饰。
+      const service = new THREE.Group();
+      const balcony = this.library.fittedModel("village-balcony", [5.2, 1.6, 2.6], 0x505965, 0.22);
+      balcony.rotation.y = -0.18;
+      service.add(balcony);
+      const crate = this.library.fittedModel("village-crate", [1.2, 1.05, 1.2], 0x5c4c3d, 0.14);
+      crate.position.set(-2.1, 0.06, 1.2);
+      service.add(crate);
+      const sight = this.library.fittedModel("village-chimney", [0.9, 2.7, 0.9], 0x566f72, 0.25);
+      sight.position.set(1.4, 0, 0.2);
+      sight.rotation.z = -0.22;
+      service.add(sight);
+      service.position.set(25, this.terrainHeightAt(25, -43, region), -43);
+      service.rotation.y = 0.32;
+      this.world.add(service);
     }
   }
 
   private spawnPlayer(region: RegionDefinition): void {
     if (!this.state) return;
     const rig = this.library.character("ranger", region.accent);
-    rig.root.position.set(this.state.player.position.x, 0, this.state.player.position.z);
+    const startY = this.isInsideFort(new THREE.Vector3(this.state.player.position.x, 0, this.state.player.position.z))
+      ? 0
+      : this.terrainHeightAt(this.state.player.position.x, this.state.player.position.z, region);
+    rig.root.position.set(this.state.player.position.x, startY, this.state.player.position.z);
     rig.root.rotation.y = Math.PI;
     rig.root.userData.player = true;
     this.playerRig = rig;
@@ -2239,23 +2681,58 @@ function makeWindWornMound(
 
   private spawnResources(region: RegionDefinition): void {
     if (!this.state || !this.streams) return;
-    const baseTypes: Array<"wood" | "stone" | "gear"> = ["wood", "stone", "wood", "stone", "gear", "wood", "stone", "gear", "wood", "stone"];
+    const regionalTypes: Record<string, Array<"wood" | "stone" | "gear">> = {
+      oasis: ["wood", "stone", "wood", "gear", "wood", "stone", "wood", "gear", "stone", "wood"],
+      canyon: ["stone", "stone", "wood", "gear", "stone", "stone", "wood", "gear", "stone", "wood"],
+      mist: ["wood", "stone", "gear", "wood", "gear", "stone", "wood", "gear", "stone", "wood"],
+      stardust: ["gear", "stone", "gear", "wood", "gear", "stone", "gear", "wood", "stone", "gear"]
+    };
+    const baseTypes = regionalTypes[region.id] ?? regionalTypes.oasis!;
     const shift = this.state.terrainVariant % baseTypes.length;
     const types = baseTypes.map((_, index) => baseTypes[(index + shift) % baseTypes.length]!);
     const survivalYield = this.state.mode === "survival" ? Math.max(0.42, 1 - (this.state.epoch - 1) * 0.1) : 1;
     const layout = RESOURCE_LAYOUTS[this.state.terrainVariant % RESOURCE_LAYOUTS.length]!;
     const cacheStacks = this.state.relics.filter((entry) => entry === "field-cache").length;
+    const interactionAnchor = oasisInteractionAnchors["resource-wide"]!;
+    const safePocket = regionEnvironmentClusters.find((cluster) => cluster.regionId === region.id && cluster.placement === "resource-pocket");
+    const approachCount = (center: THREE.Vector3): number => {
+      return interactionAnchor.approachOffsets.reduce((valid, offset) => {
+        const approach = center.clone().add(new THREE.Vector3(offset.x, 0, offset.z));
+        return valid + (this.isNavigablePoint(approach) && !this.sceneryBlockers().some(([x, z, radius]) => approach.distanceTo(new THREE.Vector3(x, 0, z)) < radius) ? 1 : 0);
+      }, 0);
+    };
     layout.slice(0, Math.min(layout.length, 8 + cacheStacks)).forEach((position, index) => {
       const id = `${this.state!.epoch}:${index}`;
       if (this.state!.gathered.includes(id)) return;
       const type = types[index]!;
-      const object = makeResource(type, this.library, region.accent);
-      object.position.copy(position);
+      let spawnPosition = position.clone();
+      if (!this.isNavigablePoint(spawnPosition) || approachCount(spawnPosition) < 8 || this.resources.some((entry) => entry.position.distanceTo(spawnPosition) < (safePocket?.minSpacing ?? 4.6))) {
+        const candidates: THREE.Vector3[] = [];
+        for (const radius of [3.5, 5.5, 7.5, 10]) {
+          for (let direction = 0; direction < 16; direction += 1) {
+            const angle = direction / 16 * Math.PI * 2 + this.state!.terrainVariant * 0.31;
+            candidates.push(position.clone().add(new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)));
+          }
+        }
+        // 最后追加主商道两侧的确定安全口袋，保证任何随机生态都不会把材料夹死在角落。
+        candidates.push(
+          new THREE.Vector3(-12, 0, -30 - index * 2.8),
+          new THREE.Vector3(12, 0, -30 - index * 2.8)
+        );
+        spawnPosition = candidates.find((candidate) =>
+          this.isNavigablePoint(candidate)
+          && approachCount(candidate) >= 8
+          && this.resources.every((entry) => entry.position.distanceTo(candidate) > (safePocket?.minSpacing ?? 4.6))
+        ) ?? new THREE.Vector3(index % 2 ? 12 : -12, 0, -30 - index * 3.1);
+      }
+      const object = makeResource(type, this.library, region.accent, region.id);
+      object.position.copy(spawnPosition);
+      object.position.y = this.terrainHeightAt(spawnPosition.x, spawnPosition.z, region);
       object.rotation.y = this.streams!.next("world") * Math.PI * 2;
       object.userData.resourceId = id;
       object.traverse((child) => { child.userData.resourceId = id; });
       const interaction = new THREE.Mesh(
-        new THREE.CylinderGeometry(2.2, 2.2, 3.2, 12),
+        new THREE.CylinderGeometry(interactionAnchor.radius, interactionAnchor.radius, 3.2, 12),
         new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
       );
       interaction.position.y = 1.6;
@@ -2269,7 +2746,7 @@ function makeWindWornMound(
         type,
         amount,
         object,
-        position: position.clone()
+        position: object.position.clone()
       } satisfies ResourceNode;
       this.resources.push(resource);
       this.createResourceLabel(resource);
@@ -2293,34 +2770,21 @@ function makeWindWornMound(
     this.resourceLabels.set(resource.id, label);
   }
 
-  /** 地面光环和悬浮菱标表示“可点击且能收集”；没有标记的只是环境装饰。 */
+  /** 四个低亮度地钉与悬浮菱标表示可采集；避免把真实资源包在游戏化的完美圆环里。 */
   private addCollectibleMarker(object: THREE.Group, type: ResourceNode["type"], resourceId: string): void {
     const color = type === "wood" ? 0x77ae70 : type === "stone" ? 0xaeb4aa : 0xd3a255;
     const marker = new THREE.Group();
     marker.name = "collectible-marker";
     marker.userData.resourceId = resourceId;
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(1.22, 1.58, 28),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.88, side: THREE.DoubleSide, depthWrite: false })
-    );
-    ring.rotation.x = -Math.PI / 2;
-    ring.position.y = 0.06;
-    ring.raycast = () => undefined;
-    const pulseRing = new THREE.Mesh(
-      new THREE.RingGeometry(0.62, 0.7, 20),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, side: THREE.DoubleSide, depthWrite: false })
-    );
-    pulseRing.rotation.x = -Math.PI / 2;
-    pulseRing.position.y = 0.075;
-    pulseRing.name = "collectible-pulse";
-    pulseRing.raycast = () => undefined;
-    const beam = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.028, 0.11, 2.7, 8, 1, true),
-      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.32, depthWrite: false })
-    );
-    beam.position.y = 1.52;
-    beam.name = "collectible-beam";
-    beam.raycast = () => undefined;
+    const markerMaterial = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.3, depthWrite: false });
+    for (let index = 0; index < 4; index += 1) {
+      const angle = index * Math.PI * 0.5 + Math.PI * 0.25;
+      const stake = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.035, 0.09), markerMaterial);
+      stake.position.set(Math.cos(angle) * 1.38, 0.07, Math.sin(angle) * 1.38);
+      stake.rotation.y = -angle;
+      stake.raycast = () => undefined;
+      marker.add(stake);
+    }
     const beacon = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.28, 0),
       new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.82, roughness: 0.4 })
@@ -2328,14 +2792,20 @@ function makeWindWornMound(
     beacon.position.y = 3.06;
     beacon.name = "collectible-beacon";
     beacon.raycast = () => undefined;
-    marker.add(ring, pulseRing, beam, beacon);
+    marker.add(beacon);
     object.add(marker);
   }
 
   private spawnFieldObjective(region: RegionDefinition): void {
     if (!this.state || !this.streams) return;
     if (!this.state.fieldObjective || this.state.fieldObjective.completed || !this.state.fieldObjective.id.startsWith(`${this.state.epoch}:`)) {
-    const types = ["mine", "ruin", "caravan", "elite", "artisan", "aid"] as const;
+      const regionalEventPools = {
+        oasis: ["caravan", "aid", "artisan", "elite"],
+        canyon: ["mine", "repair", "scout", "elite"],
+        mist: ["ruin", "artisan", "cache", "elite"],
+        stardust: ["scout", "cache", "repair", "elite"]
+      } as const;
+      const types = regionalEventPools[region.id as keyof typeof regionalEventPools] ?? regionalEventPools.oasis;
     const type = this.streams.pick("event", [...types]);
       const node = this.streams.pick("event", FIELD_OBJECTIVE_POSITIONS);
       const position = { x: node.x, z: node.z };
@@ -2345,6 +2815,12 @@ function makeWindWornMound(
           ? { stone: 7, gear: 2 }
           : type === "mine"
             ? { stone: 9, gear: 2 }
+            : type === "repair"
+              ? { stone: 6, gear: 5 }
+              : type === "scout"
+                ? { coin: 7, wood: 3, gear: 3 }
+                : type === "cache"
+                  ? { coin: 8, stone: 4, gear: 4 }
             : type === "elite"
               ? { coin: 12, gear: 4 }
               : type === "artisan"
@@ -2354,23 +2830,38 @@ function makeWindWornMound(
     }
     const objective = this.state.fieldObjective;
     if (objective.completed) return;
-    const object = makePedestal(region.accent, "route");
-    object.scale.setScalar(0.72);
-    object.position.set(objective.position.x, 0, objective.position.z);
+    const object = new THREE.Group();
+    object.position.set(objective.position.x, this.terrainHeightAt(objective.position.x, objective.position.z, region), objective.position.z);
     const typeColor = objective.type === "aid" ? 0x6aa9a0 : objective.type === "mine" ? 0x9d8568 : objective.type === "elite" ? 0xa55345 : region.accent;
-    const beacon = new THREE.Mesh(
-      objective.type === "mine" ? new THREE.DodecahedronGeometry(0.72, 0) : new THREE.OctahedronGeometry(0.56, 0),
-      new THREE.MeshStandardMaterial({ color: typeColor, emissive: typeColor, emissiveIntensity: 0.28, roughness: 0.6 })
-    );
-    beacon.position.y = objective.type === "mine" ? 1.05 : 1.5;
-    beacon.name = "artifact";
-    object.add(beacon);
-    if (objective.type === "aid") {
+    if (objective.type === "mine") {
+      object.add(makeResource("stone", this.library, region.accent, region.id));
+    } else if (objective.type === "repair") {
+      object.add(makeResource("gear", this.library, region.accent, region.id));
+    } else if (objective.type === "cache") {
+      object.add(this.library.fittedModel("village-crate", [2.1, 1.7, 1.8], typeColor, 0.16));
+    } else if (objective.type === "caravan" || objective.type === "artisan") {
+      const wagon = this.library.fittedModel("village-wagon", [3.8, 2.3, 2.5], typeColor, 0.12);
+      wagon.rotation.y = 0.45;
+      object.add(wagon);
+    } else if (objective.type === "ruin") {
+      const ruin = this.library.fittedModel("village-arch", [4.2, 3.8, 1.3], typeColor, 0.22);
+      ruin.rotation.y = -0.36;
+      object.add(ruin);
+    } else if (objective.type === "scout") {
+      const lookout = this.library.fittedModel("village-balcony", [4.2, 2.4, 2.2], typeColor, 0.18);
+      lookout.rotation.y = 0.28;
+      object.add(lookout);
+    } else {
       const banner = this.library.model("flag-banner-long", typeColor, 0.3);
-      banner.position.set(0, 2.7, 0);
-      banner.scale.setScalar(0.9);
+      banner.position.set(0, 1.1, 0);
+      banner.scale.setScalar(objective.type === "elite" ? 1.35 : 0.9);
       object.add(banner);
     }
+    const signal = new THREE.Mesh(new THREE.OctahedronGeometry(0.24, 0), new THREE.MeshStandardMaterial({ color: typeColor, emissive: typeColor, emissiveIntensity: 0.72, roughness: 0.52 }));
+    signal.position.y = 3.5;
+    signal.name = "artifact";
+    signal.raycast = () => undefined;
+    object.add(signal);
     object.userData.fieldObjective = objective.id;
     object.traverse((child) => { child.userData.fieldObjective = objective.id; });
     this.world.add(object);
@@ -2410,11 +2901,11 @@ function makeWindWornMound(
     fortify.className = "build-slot fortify-slot";
     const fortifyUnlocked = this.isTutorialBuildAllowed("fortify");
     fortify.setAttribute("aria-label", fortifyUnlocked
-      ? "道路拒马：阻挡和减速敌人，不占基地石台，成本：木材 10、石料 4"
+      ? "道路拒马：阻挡和减速敌人，不占城内功能区，成本：木材 10、石料 4"
       : "道路拒马：完成第一夜教学后开放");
     fortify.innerHTML = `<span class="model-thumb-frame fortify-thumb"><i class="ph ph-fence"></i></span><strong>拒马</strong><small>${fortifyUnlocked ? this.formatCostMarkup({ wood: 10, stone: 4 }, true) : "首夜后开放"}</small>`;
     fortify.title = fortifyUnlocked
-      ? "不占基地石台。城门外有三处金色施工架，点击施工架或这里即可部署"
+      ? "不占城内功能区。点击后镜头聚焦城门外，再选择三处道路缺口之一"
       : "完成商栈、床弩与第一夜防守后开放";
     fortify.disabled = !fortifyUnlocked;
     fortify.classList.toggle("is-tutorial-locked", !fortifyUnlocked);
@@ -2445,7 +2936,33 @@ function makeWindWornMound(
       this.setPrompt("ph-compass", "第一夜先完成商栈与机关弩塔；拒马会在下一步开放");
       return;
     }
+    if (!preferredId) {
+      this.selectedBuild = null;
+      if (this.relocation) this.cancelRelocation(false);
+      this.placingFortification = true;
+      this.cameraFocus.set(0, 1.25, -15.7);
+      this.setPrompt("ph-fence", "城门外三处道路缺口已标亮：点击任意一处安装或强化拒马");
+      return;
+    }
     const requested = preferredId ? this.state.fortifications.find((entry) => entry.id === preferredId) : undefined;
+    if (requested?.built && requested.hp > 0 && requested.hp < requested.maxHp - 0.5) {
+      const missingRatio = 1 - requested.hp / Math.max(1, requested.maxHp);
+      const repairWood = Math.max(3, Math.ceil(missingRatio * (7 + requested.level * 3)));
+      const repairStone = Math.max(1, Math.ceil(missingRatio * (3 + requested.level * 2)));
+      if (this.state.resources.wood < repairWood || this.state.resources.stone < repairStone) {
+        this.setPrompt("ph-hammer", `修理拒马需要木材 ${repairWood}、石料 ${repairStone}`);
+        return;
+      }
+      this.state.resources.wood -= repairWood;
+      this.state.resources.stone -= repairStone;
+      requested.hp = requested.maxHp;
+      this.buildWorld();
+      this.sound.build();
+      this.setPrompt("ph-hammer", `拒马已修复，支付木材 ${repairWood}、石料 ${repairStone}`);
+      this.save();
+      this.placingFortification = false;
+      return;
+    }
     if (requested?.built && requested.hp > 0 && requested.level >= 3) {
       const branches: Array<NonNullable<typeof requested.branch>> = ["spike", "sand", "oil"];
       const current = Math.max(0, branches.indexOf(requested.branch ?? "spike"));
@@ -2455,6 +2972,7 @@ function makeWindWornMound(
       this.setPrompt("ph-fence", `拒马 Lv.3 · ${names[requested.branch]}`);
       this.sound.build();
       this.save();
+      this.placingFortification = false;
       return;
     }
     const target = requested && (!requested.built || requested.hp <= 0 || requested.level < 3)
@@ -2476,9 +2994,10 @@ function makeWindWornMound(
     this.buildWorld();
     this.setPrompt("ph-fence", upgrading
       ? target.level >= 3 ? "拒马升至 Lv.3 · 默认刺桩阵；再次点击可切换流沙或火油分支" : `道路拒马强化至 Lv.${target.level}，更耐久且阻滞更强`
-      : "道路拒马已部署在城门外商道，不占基地石台");
+      : "道路拒马已部署在城门外商道，不占城内功能区");
     this.sound.build();
     this.save();
+    this.placingFortification = false;
   }
 
   private renderModelThumbnails(): void {
@@ -2528,6 +3047,7 @@ function makeWindWornMound(
 
   private selectBuild(type: BuildingType): void {
     if (!this.state || !this.canBuildNow()) return;
+    if (this.relocation) this.cancelRelocation(false);
     if (!this.isTutorialBuildAllowed(type)) {
       this.setPrompt("ph-compass", this.state.tutorialStep === 0 ? "先建造发光的丝路商栈，它会持续产生钱币" : "先建造机关弩塔，第一夜它会自动射击城门外的敌军");
       return;
@@ -2551,8 +3071,9 @@ function makeWindWornMound(
       button.classList.toggle("is-active", button.dataset.build === this.selectedBuild);
     });
     this.updatePreview();
+    this.refreshBuildZoneVisibility();
     if (this.selectedBuild) {
-      this.setPrompt(definition.icon, `${definition.name}：${definition.purpose}。选择院内发光石台放置`);
+      this.setPrompt(definition.icon, `${definition.name}：${definition.purpose}。选择发光的合法建造区域`);
     }
   }
 
@@ -2689,6 +3210,10 @@ function makeWindWornMound(
       return;
     }
     const padIndex = this.findUserData(hit.object, "padIndex");
+    if (typeof padIndex === "number" && this.relocation) {
+      this.completeRelocation(padIndex);
+      return;
+    }
     if (typeof padIndex === "number" && this.selectedBuild) {
       this.buildOnPad(this.selectedBuild, padIndex);
       return;
@@ -2708,7 +3233,7 @@ function makeWindWornMound(
   }
 
   private isInsideFort(position: THREE.Vector3): boolean {
-    return Math.abs(position.x) < 17.2 && position.z > -11.4 && position.z < this.fortBackZ() - 0.25;
+    return Math.abs(position.x) < this.fortHalfWidth() - 0.8 && position.z > -11.4 && position.z < this.fortBackZ() - 0.25;
   }
 
   private raycast(event: PointerEvent): THREE.Intersection | undefined {
@@ -2747,11 +3272,20 @@ function makeWindWornMound(
       this.world.remove(this.preview);
       this.preview = undefined;
     }
-    if (!this.selectedBuild || this.hoveredPad < 0 || !this.state) return;
-    const occupied = this.state.buildings.some((building) => building.padIndex === this.hoveredPad);
-    const affordable = canAfford(this.state.resources, buildings[this.selectedBuild].cost);
-    const preview = makeBuildModel(this.selectedBuild, this.library, regionById(this.state.regionId));
-    preview.position.copy(PAD_POSITIONS[this.hoveredPad]!);
+    if (this.hoveredPad < 0 || !this.state) return;
+    const relocatingBuilding = this.relocation
+      ? this.state.buildings.find((entry) => entry.id === this.relocation!.buildingId)
+      : undefined;
+    const activeType = relocatingBuilding?.type ?? this.selectedBuild;
+    if (!activeType) return;
+    const zone = this.currentFortLayout().zones[this.hoveredPad];
+    if (!zone) return;
+    const occupied = this.state.buildings.some((building) => building.padIndex === this.hoveredPad && building.id !== relocatingBuilding?.id);
+    const compatible = canBuildInZone(activeType, zone);
+    const affordable = Boolean(relocatingBuilding) || canAfford(this.state.resources, buildings[activeType].cost);
+    const preview = makeBuildModel(activeType, this.library, regionById(this.state.regionId));
+    preview.position.copy(this.zonePosition(this.hoveredPad));
+    preview.rotation.y = zone.rotation;
     preview.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
       child.raycast = () => undefined;
@@ -2759,7 +3293,7 @@ function makeWindWornMound(
       const ghost = (current as THREE.MeshStandardMaterial).clone();
       ghost.transparent = true;
       ghost.opacity = 0.48;
-      ghost.color.lerp(new THREE.Color(!occupied && affordable ? 0x56b98b : 0xca5644), 0.62);
+      ghost.color.lerp(new THREE.Color(!occupied && compatible && affordable ? 0x56b98b : 0xca5644), 0.62);
       child.material = ghost;
     });
     this.preview = preview;
@@ -2768,8 +3302,14 @@ function makeWindWornMound(
 
   private buildOnPad(type: BuildingType, padIndex: number): void {
     if (!this.state || !this.canBuildNow()) return;
+    const zone = this.currentFortLayout().zones[padIndex];
+    if (!zone || !canBuildInZone(type, zone)) {
+      const labels = { defense: "城防位", courtyard: "院落位", logistics: "后勤位", siege: "攻城位" } as const;
+      this.setPrompt("ph-map-pin", zone ? `${buildings[type].name}不能部署在${labels[zone.type]}` : "该建造区域尚未开放");
+      return;
+    }
     if (this.state.buildings.some((building) => building.padIndex === padIndex)) {
-      this.setPrompt("ph-warning", "这座石台已经有建筑");
+      this.setPrompt("ph-warning", "这个建造区域已经有建筑");
       return;
     }
     const definition = buildings[type];
@@ -2803,7 +3343,7 @@ function makeWindWornMound(
     this.hoveredPad = -1;
     this.updatePreview();
     this.sound.build();
-    this.burst(PAD_POSITIONS[padIndex]!.clone().setY(1), regionById(this.state.regionId).accent, 12);
+    this.burst(this.zonePosition(padIndex).setY(1), regionById(this.state.regionId).accent, 12);
     if (this.state.tutorialStep === 0 && type === "market") {
       this.state.tutorialStep = 1;
       this.refreshTutorialPads();
@@ -2827,7 +3367,9 @@ function makeWindWornMound(
     if (!this.state) return;
     building.status ??= { productionPaused: building.hp <= 0, targeted: false, lastHitAt: 0 };
     const model = makeBuildModel(building.type, this.library, regionById(this.state.regionId));
-    model.position.copy(PAD_POSITIONS[building.padIndex]!);
+    const zone = this.currentFortLayout().zones[building.padIndex];
+    model.position.copy(this.zonePosition(building.padIndex));
+    model.rotation.y = zone?.rotation ?? 0;
     model.userData.buildingId = building.id;
     model.traverse((child) => { child.userData.buildingId = building.id; });
     this.world.add(model);
@@ -2846,6 +3388,7 @@ function makeWindWornMound(
 
   private selectBuilding(id: string): void {
     if (!this.state) return;
+    if (this.relocation && this.relocation.buildingId !== id) this.cancelRelocation(false);
     const building = this.state.buildings.find((entry) => entry.id === id);
     const object = this.buildingObjects.get(id);
     if (!building || !object) return;
@@ -2877,6 +3420,9 @@ function makeWindWornMound(
     this.hud.repair.classList.toggle("is-unaffordable", building.hp < building.maxHp - 0.5 && !repairAffordable);
     this.hud.demolishRefund.textContent = "回收";
     this.hud.demolish.title = `拆除并返还 ${this.formatCost(this.demolishRefund(building))}`;
+    this.hud.relocateText.textContent = "迁移";
+    this.hud.relocate.disabled = this.state.phase !== "day";
+    this.hud.relocate.title = this.state.phase === "day" ? "免费迁移到其他合法位置" : "敌袭期间不能迁移建筑";
     const canSpecialize = building.level >= 3 && this.specializationModes(building.type).length > 1;
     this.hud.workshopMode.classList.toggle("is-hidden", !canSpecialize);
     if (canSpecialize) {
@@ -3020,9 +3566,47 @@ function makeWindWornMound(
     return this.discountRepairCost({ coin: 2 + damageScale, stone: damageScale });
   }
 
-  private gateRepairCost(): Partial<Record<ResourceKey, number>> {
-    const levelScale = Math.floor(Math.max(0, (this.state?.gateLevel ?? 1) - 1) / 3);
-    return this.discountRepairCost({ wood: 2 + levelScale, stone: 1 + Math.floor(levelScale * 0.5) });
+  private gateRepairQuote(): GateRepairQuote {
+    if (!this.state) return { restore: 0, cost: {}, fullRepair: false, emergency: false };
+    const missing = Math.max(0, this.state.gateMaxHp - this.state.gateHp);
+    const emergency = this.state.phase === "night";
+    const restore = emergency ? Math.min(missing, Math.max(28, Math.round(this.state.gateMaxHp * 0.08))) : missing;
+    if (restore <= 0) return { restore: 0, cost: {}, fullRepair: !emergency, emergency };
+    const level = this.state.gateLevel;
+    const bands = emergency ? 1 : Math.max(1, Math.ceil((missing / this.state.gateMaxHp) * 5));
+    const raw = {
+      wood: Math.ceil((2 + Math.floor((level - 1) / 4)) * bands * (emergency ? 1.2 : 1)),
+      stone: Math.ceil((1 + Math.floor((level - 1) / 6)) * bands * (emergency ? 1.2 : 1))
+    };
+    return { restore, cost: this.discountRepairCost(raw), fullRepair: !emergency, emergency };
+  }
+
+  private repairGate(): void {
+    if (!this.state || !this.playerRig || (this.state.phase !== "day" && this.state.phase !== "night")) return;
+    if (this.state.gateHp >= this.state.gateMaxHp - 0.5) {
+      this.setPrompt("ph-check-circle", "城门完好，无需修缮");
+      return;
+    }
+    const distance = this.playerRig.root.position.distanceTo(new THREE.Vector3(0, 0, -10));
+    if (distance > 5.2) {
+      this.setPrompt("ph-map-pin", "请先走到城门旁再进行修缮");
+      this.setMoveTarget(new THREE.Vector3(0, 0, -7.8));
+      return;
+    }
+    const quote = this.gateRepairQuote();
+    if (!canAfford(this.state.resources, quote.cost)) {
+      this.setPrompt("ph-hammer", `修缮城门还差 ${this.formatMissingCost(quote.cost)}`);
+      this.sound.tone(110, 0.16, "square", 0.035);
+      return;
+    }
+    pay(this.state.resources, quote.cost);
+    this.state.gateHp = Math.min(this.state.gateMaxHp, this.state.gateHp + quote.restore);
+    this.gateStatusTimer = 4;
+    this.sound.build();
+    this.burst(new THREE.Vector3(0, 2.5, -12), 0xe2ad55, quote.fullRepair ? 12 : 7);
+    this.setPrompt("ph-hammer", `${quote.fullRepair ? "城门已完整修缮" : `城门抢修 ${Math.round(quote.restore)} 点`}，支付 ${this.formatCost(quote.cost)}`);
+    this.updateHud(true);
+    this.save();
   }
 
   private discountRepairCost(cost: Partial<Record<ResourceKey, number>>): Partial<Record<ResourceKey, number>> {
@@ -3035,6 +3619,114 @@ function makeWindWornMound(
     ) as Partial<Record<ResourceKey, number>>;
   }
 
+  private beginRelocation(): void {
+    if (!this.state || !this.selectedBuildingId) return;
+    if (this.state.phase !== "day") {
+      this.setPrompt("ph-moon", "敌袭期间不能搬迁建筑，请在白天重新布防");
+      return;
+    }
+    const building = this.state.buildings.find((entry) => entry.id === this.selectedBuildingId);
+    if (!building) return;
+    this.relocation = { buildingId: building.id, originPadIndex: building.padIndex, hoveredPadIndex: -1 };
+    this.selectedBuild = null;
+    const object = this.buildingObjects.get(building.id);
+    if (object) object.visible = false;
+    this.hud.context.classList.add("is-hidden");
+    this.refreshBuildZoneVisibility();
+    this.updatePreview();
+    this.setPrompt("ph-arrows-out-cardinal", `迁移${buildings[building.type].name}：绿色位置可放置，右键取消`);
+  }
+
+  private completeRelocation(padIndex: number): void {
+    if (!this.state || !this.relocation) return;
+    const relocation = this.relocation;
+    const building = this.state.buildings.find((entry) => entry.id === relocation.buildingId);
+    const zone = this.currentFortLayout().zones[padIndex];
+    if (!building || !zone) return;
+    if (this.state.buildings.some((entry) => entry.padIndex === padIndex && entry.id !== building.id)) {
+      this.setPrompt("ph-warning", "这个建造区域已经被占用");
+      return;
+    }
+    if (!canBuildInZone(building.type, zone)) {
+      this.setPrompt("ph-map-pin", `${buildings[building.type].name}不适合这个功能区域`);
+      return;
+    }
+    building.padIndex = padIndex;
+    const object = this.buildingObjects.get(building.id);
+    if (object) {
+      object.position.copy(this.zonePosition(padIndex));
+      object.rotation.y = zone.rotation;
+      object.visible = true;
+      this.burst(object.position.clone().setY(1.4), 0xd6b36b, 10);
+    }
+    this.relocation = null;
+    this.hoveredPad = -1;
+    this.updatePreview();
+    this.refreshBuildZoneVisibility();
+    this.sound.build();
+    this.setPrompt("ph-arrows-out-cardinal", `${buildings[building.type].name}已迁移，等级和耐久保持不变`);
+    this.selectBuilding(building.id);
+    this.save();
+  }
+
+  private cancelRelocation(reselect = true): void {
+    if (!this.relocation) return;
+    const id = this.relocation.buildingId;
+    const object = this.buildingObjects.get(id);
+    if (object) object.visible = true;
+    this.relocation = null;
+    this.hoveredPad = -1;
+    this.updatePreview();
+    this.refreshBuildZoneVisibility();
+    if (reselect) this.selectBuilding(id);
+  }
+
+  /**
+   * 按功能区重排现有建筑。它不是替玩家做数值选择，只解决扩城后前排武器留在后院、
+   * 生产建筑占据门楼等明显不合理布局；所有建筑的 ID、等级、专精、耐久和生产进度不变。
+   */
+  private autoArrangeBuildings(): void {
+    if (!this.state || this.state.phase !== "day" || this.state.enemies.length > 0 || this.relocation) {
+      this.setPrompt("ph-layout", "只能在安全的白天整理防线");
+      return;
+    }
+    const layout = this.currentFortLayout();
+    const unused = new Set(layout.zones.map((_, zoneIndex) => zoneIndex));
+    const rolePriority = (building: BuildingState): number => {
+      if (building.type === "trebuchet") return 0;
+      if (["ballista", "fire", "antiair"].includes(building.type)) return 1;
+      if (["market", "workshop"].includes(building.type)) return 2;
+      return 3;
+    };
+    const score = (building: BuildingState, zoneIndex: number): number => {
+      const zone = layout.zones[zoneIndex];
+      if (!zone || !canBuildInZone(building.type, zone)) return -Infinity;
+      let value = 0;
+      if (building.type === "trebuchet") value += zone.type === "siege" ? 120 : zone.type === "courtyard" ? 35 : 0;
+      else if (["ballista", "fire", "antiair"].includes(building.type)) value += zone.type === "defense" ? 110 : 36;
+      else value += zone.type === "logistics" ? 105 : 42;
+      if (building.type === "fire" && zone.coveredLanes.includes(0)) value += 16;
+      if (building.type === "antiair" && zone.coveredLanes.length >= 2) value += 14;
+      if (zone.elevation > 0 && ["ballista", "antiair", "trebuchet"].includes(building.type)) value += 10;
+      return value;
+    };
+    const ordered = [...this.state.buildings].sort((a, b) => rolePriority(a) - rolePriority(b));
+    for (const building of ordered) {
+      const destination = [...unused]
+        .map((zoneIndex) => ({ zoneIndex, score: score(building, zoneIndex) }))
+        .filter((entry) => Number.isFinite(entry.score))
+        .sort((a, b) => b.score - a.score)[0];
+      if (!destination) continue;
+      building.padIndex = destination.zoneIndex;
+      unused.delete(destination.zoneIndex);
+    }
+    this.selectedBuild = null;
+    this.selectedBuildingId = null;
+    this.buildWorld();
+    this.setPrompt("ph-layout", "防线已整理：武器前置、生产后移；仍可逐座免费迁移");
+    this.save();
+  }
+
   /** 拆除是换流派的工具：返还一部分原建造、升级投入，永远不会比投入更多。 */
   private demolishRefund(building: BuildingState): Partial<Record<ResourceKey, number>> {
     const spent: Partial<Record<ResourceKey, number>> = { ...buildings[building.type].cost };
@@ -3042,10 +3734,13 @@ function makeWindWornMound(
       const upgrade = upgradeCost(building.type, level);
       for (const key of Object.keys(upgrade) as ResourceKey[]) spent[key] = (spent[key] ?? 0) + (upgrade[key] ?? 0);
     }
+    const healthRatio = THREE.MathUtils.clamp(building.hp / Math.max(1, building.maxHp), 0, 1);
+    const refundRate = building.hp <= 0 ? 0.15 : 0.65 * healthRatio;
     return Object.fromEntries(
       Object.entries(spent)
-        .filter(([, value]) => (value ?? 0) > 0)
-        .map(([key, value]) => [key, Math.max(1, Math.floor((value ?? 0) * 0.58))])
+        .filter(([, value]) => Number(value ?? 0) > 0)
+        .map(([key, value]) => [key, Math.max(0, Math.floor(Number(value ?? 0) * refundRate))] as const)
+        .filter(([, value]) => value > 0)
     ) as Partial<Record<ResourceKey, number>>;
   }
 
@@ -3055,6 +3750,8 @@ function makeWindWornMound(
     if (index < 0) return;
     const building = this.state.buildings[index]!;
     const refund = this.demolishRefund(building);
+    const accepted = window.confirm(`回收${buildings[building.type].name}？将返还 ${this.formatCost(refund) || "少量残料"}，此操作无法撤销。`);
+    if (!accepted) return;
     for (const key of Object.keys(refund) as ResourceKey[]) this.state.resources[key] += refund[key] ?? 0;
     const object = this.buildingObjects.get(building.id);
     if (object) {
@@ -3119,9 +3816,12 @@ function makeWindWornMound(
     if (building.type === "market") {
       const tradeBonus = this.state.relics.filter((entry) => entry === "trade").length;
       const amount = 1 + Math.floor(Math.pow(Math.max(0, building.level - 1), 0.78)) + tradeBonus;
-      if (building.level < 3) return `自动产钱 +${amount} / 3秒，Lv.3 可选车队或军需专精`;
-      if (this.activeSpecialization(building) === "supply") return `军需库：产币 +${amount}，并补给下一种材料 +1 / 3秒`;
-      return `车队站：自动产钱 +${amount + 1} / 3秒`;
+      const names = { wood: "木材", stone: "石料", gear: "机巧" } as const;
+      const weights = { wood: 1.2, stone: 1, gear: 0.65 } as const;
+      const shortage = (["wood", "stone", "gear"] as const).slice().sort((a, b) => this.state!.resources[a] / weights[a] - this.state!.resources[b] / weights[b])[0]!;
+      if (building.level < 3) return `产币 +${amount}；留足储备后以 2 钱币采购最缺的${names[shortage]}`;
+      if (this.activeSpecialization(building) === "supply") return `军需库：每轮最多用 4 钱币补给 2 份紧缺材料`;
+      return `车队站：专注钱币收入 +${amount + 1} / 3秒，不自动采购材料`;
     }
     if (building.type === "workshop") {
       const amount = Math.max(1, Math.floor(1 + (building.level - 1) * 0.58));
@@ -3195,8 +3895,8 @@ function makeWindWornMound(
         this.camera.position.set(Math.sin(this.cameraYaw) * radius * 0.22, 16.5, -radius + 1.2);
         this.camera.lookAt(0, 2.9, 2.2);
       }
-      this.placeDistantPanorama();
       this.animateWorld(delta);
+      this.updateWeather(delta);
       this.updateTitlePreview();
       return;
     }
@@ -3213,8 +3913,10 @@ function makeWindWornMound(
     this.updateCamera(delta);
     this.updateGateAnimation(delta);
     this.animateWorld(delta);
+    this.updateWeather(delta);
     this.updateProjectiles(simulationDelta);
     this.updateParticles(simulationDelta);
+    this.updateFallenVisuals(simulationDelta);
     this.positionWorldUi();
 
     this.state.player.attackCooldown = Math.max(0, this.state.player.attackCooldown - delta);
@@ -3244,7 +3946,7 @@ function makeWindWornMound(
 
   private updateAdaptiveQuality(delta: number): void {
     if (document.hidden || delta <= 0 || delta >= 0.049) return;
-    if (this.state?.qualityTier && this.state.qualityTier !== "auto") return;
+    if (this.preferredQuality !== "auto") return;
     this.qualitySampleTime += delta;
     this.qualityFrames += 1;
     if (this.qualitySampleTime < 3) return;
@@ -3272,11 +3974,50 @@ function makeWindWornMound(
   }
 
   private applyQuality(): void {
+    const preset = qualityPresets[this.effectiveQuality];
     const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
-    const cap = this.effectiveQuality === "high" ? 1.5 : this.effectiveQuality === "medium" ? 1.18 : 0.9;
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, coarsePointer ? Math.min(cap, 1.18) : cap));
-    this.renderer.shadowMap.enabled = this.effectiveQuality !== "low";
-    this.renderer.toneMappingExposure = this.effectiveQuality === "low" ? 0.98 : 0.94;
+    const cap = coarsePointer ? Math.min(preset.pixelRatio, 1.18) : preset.pixelRatio;
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, cap));
+    this.renderer.shadowMap.enabled = preset.shadows;
+    const isNight = this.state?.phase === "night" || (this.titlePreview && this.state?.mode === "survival");
+    const dayExposure = this.effectiveQuality === "low" ? 0.98 : 0.94;
+    this.renderer.toneMappingExposure = isNight ? dayExposure * (1.08 + (this.nightBrightness - 1) * 0.55) : dayExposure;
+    if (this.sunLight) {
+      this.sunLight.castShadow = preset.shadows;
+      this.sunLight.shadow.mapSize.set(preset.shadowMapSize, preset.shadowMapSize);
+      this.sunLight.shadow.map?.dispose();
+      this.sunLight.shadow.map = null;
+    }
+    if (this.weatherParticles) {
+      const positions = this.weatherParticles.geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+      const profile = regionVisualProfiles[this.state?.regionId ?? "oasis"] ?? regionVisualProfiles.oasis!;
+      const visible = Math.round(preset.weatherParticles * profile.weatherDensity);
+      this.weatherParticles.geometry.setDrawRange(0, positions ? Math.min(positions.count, visible) : 0);
+    }
+    this.syncQualityButtons();
+  }
+
+  private setQualityTier(tier: QualityTier): void {
+    if (!["auto", "low", "medium", "high"].includes(tier)) return;
+    this.preferredQuality = tier;
+    const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+    this.effectiveQuality = tier === "auto"
+      ? (coarsePointer || window.innerWidth < 820 ? "medium" : "high")
+      : tier;
+    if (this.state) this.state.qualityTier = tier;
+    localStorage.setItem("silk-road-bastion:quality", tier);
+    this.applyQuality();
+    const current = this.effectiveQuality === "high" ? "高" : this.effectiveQuality === "medium" ? "中" : "低";
+    this.setPrompt("ph-gauge", `画质：${tier === "auto" ? `自动（当前${current}）` : current}`);
+    this.save();
+  }
+
+  private syncQualityButtons(): void {
+    document.querySelectorAll<HTMLButtonElement>("[data-quality]").forEach((button) => {
+      const active = button.dataset.quality === this.preferredQuality;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
   }
 
   private updateGateAnimation(delta: number): void {
@@ -3324,7 +4065,12 @@ function makeWindWornMound(
     }
     const moving = direction.lengthSq() > 0.02;
     this.playerRig.setMoving(moving);
-    if (!moving) return;
+    // 寻路恰好结束时角色已经静止；采集判定不能跟着移动逻辑一起提前 return，
+    // 否则会出现“已经站在倒木/岩簇旁边，却永远不结算”的顽固问题。
+    if (!moving) {
+      this.autoInteract();
+      return;
+    }
     direction.normalize();
     const previous = this.playerRig.root.position.clone();
     const speed = this.state.mode === "training"
@@ -3333,6 +4079,9 @@ function makeWindWornMound(
     this.playerRig.root.position.addScaledVector(direction, speed * delta);
     this.playerRig.root.rotation.y = Math.atan2(direction.x, direction.z);
     this.resolvePlayerBounds(previous);
+    this.playerRig.root.position.y = this.isInsideFort(this.playerRig.root.position)
+      ? 0
+      : this.terrainHeightAt(this.playerRig.root.position.x, this.playerRig.root.position.z);
     if (this.playerFootstepCooldown <= 0 && previous.distanceToSquared(this.playerRig.root.position) > 0.0025) {
       this.playerFootstepCooldown = this.isInsideFort(this.playerRig.root.position) ? 0.32 : 0.4;
       this.sound.footstep(this.isInsideFort(this.playerRig.root.position));
@@ -3352,6 +4101,11 @@ function makeWindWornMound(
     if (this.state.mode !== "training") {
       destination.x = THREE.MathUtils.clamp(destination.x, -61, 61);
       destination.z = THREE.MathUtils.clamp(destination.z, -71, 41);
+      if (!this.isNavigablePoint(destination) && !this.isInsideFort(destination)) {
+        this.selectedResourceId = null;
+        this.showBoundaryHint("该位置被地形阻挡，请点击浅色商道或发光采集标记");
+        return;
+      }
     }
     const startInside = this.isInsideFort(this.playerRig.root.position);
     const targetInside = this.isInsideFort(destination);
@@ -3364,8 +4118,15 @@ function makeWindWornMound(
     if (this.state.mode !== "training" && !targetInside) {
       const navigationStart = route.at(-1) ?? this.playerRig.root.position;
       const navigation = this.findGroundPath(navigationStart, destination);
-      if (followTradeRoad && navigation.length <= 1) route.push(...this.tradeRoadWaypoints(destination));
-      else route.push(...navigation);
+      if (!navigation.length) {
+        this.selectedResourceId = null;
+        this.showBoundaryHint("当前目标不可达，已取消移动");
+        return;
+      }
+      // 事件仍可偏向商道，但最终以碰撞网格给出的可达最短路为准，不再强迫角色来回跑固定折线。
+      if (followTradeRoad && navigation.length === 1 && this.tradeRoadWaypoints(destination).every((point) => this.isNavigablePoint(point))) {
+        route.push(...navigation);
+      } else route.push(...navigation);
     } else {
       route.push(destination);
     }
@@ -3380,6 +4141,11 @@ function makeWindWornMound(
    */
   private setResourceTarget(resource: ResourceNode): void {
     if (!this.playerRig) return;
+    const interactionAnchor = oasisInteractionAnchors["resource-wide"]!;
+    if (resource.position.distanceTo(this.playerRig.root.position) < interactionAnchor.radius + 1.1) {
+      this.collectResource(resource);
+      return;
+    }
     this.selectedResourceId = resource.id;
     const origin = this.playerRig.root.position.clone().setY(0);
     const vector = resource.position.clone().sub(origin).setY(0);
@@ -3387,17 +4153,35 @@ function makeWindWornMound(
       this.setMoveTarget(resource.position);
       return;
     }
-    const preferred = resource.position.clone().addScaledVector(vector.normalize(), -2.12).setY(0);
+    const preferred = resource.position.clone().addScaledVector(vector.normalize(), -interactionAnchor.radius - 0.35).setY(0);
     // 地貌装饰会随区域变化。若资源入口恰好落在岩石或水域边缘，从资源周围挑选
     // 距玩家最近的可达入口，避免角色在模型边缘原地顶住或反复绕行。
     const candidates = [preferred];
-    for (let index = 0; index < 16; index += 1) {
-      const angle = index / 16 * Math.PI * 2;
-      candidates.push(resource.position.clone().add(new THREE.Vector3(Math.cos(angle) * 2.25, 0, Math.sin(angle) * 2.25)));
+    for (const radius of [interactionAnchor.radius + 0.35, interactionAnchor.radius + 0.9, interactionAnchor.radius + 1.55]) {
+      for (let index = 0; index < 20; index += 1) {
+        const angle = index / 20 * Math.PI * 2;
+        candidates.push(resource.position.clone().add(new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)));
+      }
     }
-    const approach = candidates
+    // “离玩家最近”不等于真正可到达。逐个候选检查完整路径，选择总路程最短的接触点；
+    // 这样角落资源会从开放一侧接近，不会再在树、岩石或水渠边缘原地顶住。
+    const routed = candidates
       .filter((candidate) => this.isNavigablePoint(candidate))
-      .sort((a, b) => a.distanceToSquared(origin) - b.distanceToSquared(origin))[0] ?? preferred;
+      .map((candidate) => {
+        const route = this.findGroundPath(origin, candidate);
+        let length = 0;
+        let cursor = origin;
+        for (const point of route) { length += cursor.distanceTo(point); cursor = point; }
+        return { candidate, route, length };
+      })
+      .filter((entry) => entry.route.length > 0)
+      .sort((a, b) => a.length - b.length);
+    const approach = routed[0]?.candidate;
+    if (!approach) {
+      this.selectedResourceId = null;
+      this.showBoundaryHint("这处材料被地貌封住，已自动标记为不可采；刷新场景后会迁到开放位置");
+      return;
+    }
     this.setMoveTarget(approach);
   }
 
@@ -3452,7 +4236,7 @@ function makeWindWornMound(
         frontier.push({ x: nx, z: nz, score: nextCost + heuristic });
       }
     }
-    if (!found) return [destination];
+    if (!found) return [];
     const cells: Array<[number, number]> = [];
     let cursor = key(goalX, goalZ);
     while (cursor !== key(startX, startZ) && cells.length < 240) {
@@ -3463,31 +4247,55 @@ function makeWindWornMound(
       cursor = previous;
     }
     cells.reverse();
-    const compressed: THREE.Vector3[] = [];
-    let lastDirection = "";
-    cells.forEach(([x, z], index) => {
-      const previous = index === 0 ? [startX, startZ] : cells[index - 1]!;
-      const direction = `${Math.sign(x - previous[0])}:${Math.sign(z - previous[1])}`;
-      if (index > 0 && direction !== lastDirection) compressed.push(toWorld(previous[0], previous[1]));
-      lastDirection = direction;
-    });
-    compressed.push(destination);
-    return compressed;
+    const raw = cells.map(([x, z]) => toWorld(x, z));
+    raw[raw.length - 1] = destination;
+    const segmentIsClear = (from: THREE.Vector3, to: THREE.Vector3): boolean => {
+      const distance = from.distanceTo(to);
+      const steps = Math.max(1, Math.ceil(distance / 1.05));
+      for (let step = 1; step < steps; step += 1) {
+        const sample = from.clone().lerp(to, step / steps);
+        if (!this.isNavigablePoint(sample)) return false;
+      }
+      return true;
+    };
+    // A* 保证可达，再以可见线段贪心压缩。开放地面会直接抄近路，只有岩群、
+    // 水渠和城墙真正挡路时才留下转折，避免网格路径造成来回折线。
+    const smoothed: THREE.Vector3[] = [];
+    let anchor = start.clone().setY(0);
+    let cursorIndex = 0;
+    while (cursorIndex < raw.length) {
+      let furthest = cursorIndex;
+      for (let candidate = raw.length - 1; candidate > cursorIndex; candidate -= 1) {
+        if (segmentIsClear(anchor, raw[candidate]!)) { furthest = candidate; break; }
+      }
+      const next = raw[furthest]!;
+      smoothed.push(next);
+      anchor = next;
+      cursorIndex = furthest + 1;
+    }
+    return smoothed;
+  }
+
+  /** 仅把画面中确实存在的大型地貌登记为阻挡，避免“看似空地却走不过去”。 */
+  private sceneryBlockers(): Array<[number, number, number]> {
+    if (this.state?.regionId === "oasis") return [[-23, -36, 6.6], [-34, -42, 1.8], [-42, -47, 1.6]];
+    if (this.state?.regionId === "mist") return [[22, -37, 7.4], [-23, -24, 2.3], [20, -26, 2.3], [-27, -36, 2.3]];
+    if (this.state?.regionId === "canyon") return [
+      [-49, -57, 3.2], [-36, -61, 3.5], [36, -58, 2.9], [49, -53, 2.7],
+      [-42.4, -47.2, 2], [-39.2, -42.9, 1.8], [-34.8, -40.6, 2.2], [-29.8, -41.8, 1.9], [-25.9, -45.9, 2]
+    ];
+    if (this.state?.regionId === "stardust") return [[-21, -25, 1.6], [22, -27, 1.6], [-17, -38, 1.6], [18, -40, 1.6]];
+    return [];
   }
 
   private isNavigablePoint(point: THREE.Vector3): boolean {
     if (point.x < -62 || point.x > 62 || point.z < -72 || point.z > 42) return false;
     const backZ = this.fortBackZ();
-    if (point.z > -13.4 && point.z < -10.1 && Math.abs(point.x) > 3.05 && Math.abs(point.x) < 19.2) return false;
-    if (Math.abs(point.x) > 16.1 && Math.abs(point.x) < 19.4 && point.z > -12.8 && point.z < backZ + 1.2) return false;
-    if (point.z > backZ - 1.2 && point.z < backZ + 1.4 && Math.abs(point.x) < 19.2) return false;
-    const blockers: Array<[number, number, number]> = [
-      [-34, -28, 3.8], [33, -23, 3.5], [-31, 12, 2.8], [29, 18, 2.7],
-      [34, 26, 3.6], [-34, -3, 2.6], [-21, -27, 2.4], [22, -31, 2.4]
-    ];
-    if (this.state?.regionId === "oasis") blockers.push([-23, -36, 6.6]);
-    if (this.state?.regionId === "mist") blockers.push([22, -37, 7.4]);
-    return !blockers.some(([x, z, radius]) => Math.hypot(point.x - x, point.z - z) < radius);
+    const halfWidth = this.fortHalfWidth();
+    if (point.z > -13.4 && point.z < -10.1 && Math.abs(point.x) > 3.05 && Math.abs(point.x) < halfWidth + 1.2) return false;
+    if (Math.abs(point.x) > halfWidth - 1.9 && Math.abs(point.x) < halfWidth + 1.4 && point.z > -12.8 && point.z < backZ + 1.2) return false;
+    if (point.z > backZ - 1.2 && point.z < backZ + 1.4 && Math.abs(point.x) < halfWidth + 1.2) return false;
+    return !this.sceneryBlockers().some(([x, z, radius]) => Math.hypot(point.x - x, point.z - z) < radius);
   }
 
   /** 用少量地面箭头表达实际会走的路线，尤其在穿过城门时让玩家知道不是卡住。 */
@@ -3552,21 +4360,16 @@ function makeWindWornMound(
       this.setPrompt("ph-compass", "已出城：浅色商道可走；带发光环和悬浮菱标的木材、石料、机巧可采集");
     }
     const backZ = this.fortBackZ();
-    if (Math.abs(position.x) > 16.4 && position.z > -11 && position.z < backZ + 1) {
+    const halfWidth = this.fortHalfWidth();
+    if (Math.abs(position.x) > halfWidth - 1.6 && position.z > -11 && position.z < backZ + 1) {
       position.copy(previous);
       this.showBoundaryHint("围墙在此封闭，沿道路回到城门");
     }
-    if (position.z > backZ - 1 && Math.abs(position.x) < 18.2) {
+    if (position.z > backZ - 1 && Math.abs(position.x) < halfWidth + 0.2) {
       position.copy(previous);
       this.showBoundaryHint("主帐后方是封闭营地，向两侧空地移动");
     }
-    const blockers: Array<[number, number, number]> = [
-      [-34, -28, 3.4], [33, -23, 3.1], [-31, 12, 2.4], [29, 18, 2.3],
-      [34, 26, 3.2], [-34, -3, 2.2], [-21, -27, 2], [22, -31, 2]
-    ];
-    if (this.state?.regionId === "oasis") blockers.push([-23, -36, 6.2]);
-    if (this.state?.regionId === "mist") blockers.push([22, -37, 7]);
-    if (blockers.some(([x, z, radius]) => Math.hypot(position.x - x, position.z - z) < radius)) {
+    if (this.sceneryBlockers().some(([x, z, radius]) => Math.hypot(position.x - x, position.z - z) < radius - 0.35)) {
       position.copy(previous);
       this.showBoundaryHint("岩群、水渠和树丛是实体障碍，请从旁边绕过");
     }
@@ -3580,7 +4383,10 @@ function makeWindWornMound(
 
   private autoInteract(): void {
     if (!this.playerRig || !this.state || this.state.phase !== "day") return;
-    const near = this.resources.find((resource) => resource.position.distanceTo(this.playerRig!.root.position) < 2.7);
+    const near = this.resources.find((resource) => {
+      const threshold = resource.id === this.selectedResourceId ? 6.1 : 3.4;
+      return resource.position.distanceTo(this.playerRig!.root.position) < threshold;
+    });
     if (near) {
       this.collectResource(near);
       return;
@@ -3595,7 +4401,7 @@ function makeWindWornMound(
   private interact(): void {
     if (!this.state || !this.playerRig) return;
     if (this.state.phase === "day") {
-      const near = this.resources.find((resource) => resource.position.distanceTo(this.playerRig!.root.position) < 3.5);
+      const near = this.resources.find((resource) => resource.position.distanceTo(this.playerRig!.root.position) < 4.6);
       if (near) {
         this.collectResource(near);
         return;
@@ -3615,16 +4421,8 @@ function makeWindWornMound(
       }
     }
     const distanceGate = this.playerRig.root.position.distanceTo(new THREE.Vector3(0, 0, -10));
-    const gateCost = this.gateRepairCost();
-    if (this.state.phase === "night" && distanceGate < 4 && this.state.gateHp < this.state.gateMaxHp && canAfford(this.state.resources, gateCost)) {
-      pay(this.state.resources, gateCost);
-      this.state.gateHp = Math.min(this.state.gateMaxHp, this.state.gateHp + 28);
-      this.sound.build();
-      this.burst(new THREE.Vector3(0, 2.5, -12), 0xe2ad55, 7);
-      this.setPrompt("ph-hammer", `城门修复 28 点耐久，支付 ${this.formatCost(gateCost)}`);
-      return;
-    } else if (this.state.phase === "night" && distanceGate < 4 && this.state.gateHp < this.state.gateMaxHp) {
-      this.setPrompt("ph-hammer", `修复城门需要 ${this.formatCost(gateCost)}`);
+    if (distanceGate < 4.8 && this.state.gateHp < this.state.gateMaxHp) {
+      this.repairGate();
       return;
     }
     this.action();
@@ -3645,12 +4443,15 @@ function makeWindWornMound(
     this.resourceLabels.delete(resource.id);
     this.resources = this.resources.filter((node) => node !== resource);
     if (this.selectedResourceId === resource.id) this.selectedResourceId = null;
+    this.clickTarget = null;
+    this.clickRoute = [];
+    this.clearMoveRouteGuide();
     this.sound.coin();
     this.burst(resource.position.clone().setY(1.2), regionById(this.state.regionId).accent, 10);
     this.setPrompt(key === "wood" ? "ph-tree" : key === "stone" ? "ph-mountains" : "ph-gear-six", `获得 ${amount}${key === "wood" ? " 木材" : key === "stone" ? " 石料" : " 机巧"}`);
     if (this.state.tutorialStep === 0) {
       // 城外采集是可选收益，不能把第一次的“商栈 → 床弩”教学顺序跳掉。
-      this.setPrompt("ph-storefront", "材料已送回驿站。第一步仍是：点底部商栈，再点发光石台");
+      this.setPrompt("ph-storefront", "材料已送回驿站。选择底部商栈，再点后院发光地基");
     }
     this.updateHud(true);
   }
@@ -3668,10 +4469,14 @@ function makeWindWornMound(
       this.world.remove(this.fieldObject);
       this.fieldObject = undefined;
     }
-    if (objective.type === "elite") this.state.scoutIntel = Math.max(this.state.scoutIntel ?? 0, 1);
+    if (objective.type === "elite" || objective.type === "scout") this.state.scoutIntel = Math.max(this.state.scoutIntel ?? 0, 1);
     if (objective.type === "aid") this.state.reinforcementNights = Math.max(this.state.reinforcementNights ?? 0, 1);
     if (objective.type === "artisan") {
       this.state.gateHp = Math.min(this.state.gateMaxHp, this.state.gateHp + 38);
+      this.gateStatusTimer = 2.5;
+    }
+    if (objective.type === "repair") {
+      this.state.gateHp = Math.min(this.state.gateMaxHp, this.state.gateHp + 24);
       this.gateStatusTimer = 2.5;
     }
     this.state.eventsCompleted += 1;
@@ -3679,10 +4484,14 @@ function makeWindWornMound(
     this.sound.coin();
     const bonus = objective.type === "elite"
       ? "，下一夜敌军规模已被侦察削减"
-      : objective.type === "aid"
+      : objective.type === "scout"
+        ? "，下一夜敌军规模已被侦察削减"
+        : objective.type === "aid"
         ? "，两名守卫会在下一夜加入防线"
         : objective.type === "artisan"
           ? "，城门额外修复 38 点耐久"
+          : objective.type === "repair"
+            ? "，城门额外修复 24 点耐久"
           : "，奖励已送回驿站";
     this.setPrompt("ph-check-circle", `${names[objective.type]}完成${bonus}`);
     this.updateHud(true);
@@ -3770,11 +4579,10 @@ function makeWindWornMound(
     }
     this.camera.position.lerp(desired, 1 - Math.pow(0.002, delta));
     this.camera.lookAt(focus.x, 1.35, focus.z);
-    this.placeDistantPanorama();
     this.updateOccluders(playerPosition, delta);
   }
 
-  /** 注册有高度的场景实体；地面、石台和交互光环不参与遮挡判定。 */
+  /** 注册有高度的场景实体；地面、功能区提示和交互光环不参与遮挡判定。 */
   private refreshOccluders(): void {
     this.registerOccluders(this.world);
   }
@@ -3845,6 +4653,9 @@ function makeWindWornMound(
       if (object.name === "flame") {
         object.scale.y = 0.86 + Math.sin(elapsed * 7 + object.id) * 0.18;
         object.rotation.y += animationDelta * 1.3;
+      } else if (object.name === "fort-torch-light" && object instanceof THREE.PointLight && this.state?.phase === "night") {
+        const base = Number(object.userData.baseIntensity ?? 2.65) * this.nightBrightness;
+        object.intensity = base * (0.92 + Math.sin(elapsed * 8.2 + object.id) * 0.08);
       } else if (object.name === "core-crystal" || object.name === "artifact") {
         object.rotation.y += animationDelta * 0.7;
         object.position.y += Math.sin(elapsed * 2.1 + object.id) * 0.0016;
@@ -3856,22 +4667,39 @@ function makeWindWornMound(
         const pulse = 0.92 + Math.sin(elapsed * 3.1 + object.id) * 0.2;
         object.scale.set(pulse, pulse, pulse);
         const material = object instanceof THREE.Mesh ? object.material as THREE.MeshBasicMaterial : undefined;
-        if (material) material.opacity = 0.36 + Math.sin(elapsed * 3.1 + object.id) * 0.16;
+        if (material) material.opacity = 0.18 + Math.sin(elapsed * 3.1 + object.id) * 0.07;
       } else if (object.name === "collectible-beacon") {
         object.position.y = 3.06 + Math.sin(elapsed * 2.8 + object.id) * 0.16;
       } else if (object.name === "collectible-beam") {
         const material = object instanceof THREE.Mesh ? object.material as THREE.MeshBasicMaterial : undefined;
         if (material) material.opacity = 0.24 + Math.sin(elapsed * 2.8 + object.id) * 0.12;
       } else if (object.name === "fortification-marker") {
-        const pulse = 1 + Math.sin(elapsed * 2.4 + object.id) * 0.09;
+        const pulse = 1 + Math.sin(elapsed * (this.placingFortification ? 4.2 : 2.4) + object.id) * (this.placingFortification ? 0.16 : 0.09);
         object.scale.set(pulse, pulse, pulse);
         const material = object instanceof THREE.Mesh ? object.material as THREE.MeshBasicMaterial : undefined;
-        if (material) material.opacity = 0.52 + Math.sin(elapsed * 2.4 + object.id) * 0.18;
+        if (material) material.opacity = (this.placingFortification ? 0.72 : 0.52) + Math.sin(elapsed * 2.4 + object.id) * 0.18;
       } else if (object.name === "fortification-signal") {
         object.rotation.y += animationDelta * 1.4;
         object.position.y = 5.62 + Math.sin(elapsed * 2.3 + object.id) * 0.16;
       } else if (object.name === "flyer-rotor") {
         object.rotation.y += animationDelta * 13;
+      } else if (object.name.startsWith("boss-")) {
+        let root: THREE.Object3D | null = object.parent;
+        while (root && !root.userData.enemyId) root = root.parent;
+        const action = String(root?.userData.bossAction ?? "advance");
+        const telegraph = action !== "advance" && action !== "recover";
+        if (object.name === "boss-kite-wing") {
+          object.rotation.z = Math.sin(elapsed * (telegraph ? 8.5 : 4.2) + object.id) * (telegraph ? 0.32 : 0.12);
+        } else if (object.name === "boss-kite-array") {
+          object.rotation.y += animationDelta * (telegraph ? 2.8 : 0.55);
+        } else if (object.name === "boss-fuse" && object instanceof THREE.Mesh) {
+          const mat = object.material as THREE.MeshStandardMaterial;
+          mat.emissiveIntensity = telegraph ? 1.2 + Math.sin(elapsed * 12) * 0.5 : 0.28;
+        } else if (object.name === "boss-shield") {
+          object.rotation.z = telegraph ? Math.sin(elapsed * 7) * 0.09 : 0;
+        } else if (object.name === "boss-beast-head") {
+          object.rotation.x = telegraph ? -0.28 + Math.sin(elapsed * 9) * 0.08 : 0;
+        }
       } else if (object.name === "expansion-pad-marker") {
         const pulse = 1 + Math.sin(elapsed * 2.1 + object.id) * 0.035;
         object.scale.set(pulse, pulse, pulse);
@@ -3906,6 +4734,28 @@ function makeWindWornMound(
         }
       }
     });
+  }
+
+  private updateWeather(delta: number): void {
+    if (!this.weatherParticles) return;
+    const phase = this.state
+      ? (this.state.weatherPhase = (this.state.weatherPhase + delta) % (Math.PI * 2))
+      : (this.previewWeatherPhase = (this.previewWeatherPhase + delta) % (Math.PI * 2));
+    const profile = regionVisualProfiles[this.state?.regionId ?? this.activeVisualRegionId] ?? regionVisualProfiles.oasis!;
+    const attribute = this.weatherParticles.geometry.getAttribute("position") as THREE.BufferAttribute;
+    for (let index = 0; index < attribute.count; index += 1) {
+      let x = attribute.getX(index) + this.weatherVelocity.x * delta;
+      let y = attribute.getY(index) + this.weatherVelocity.y * delta;
+      let z = attribute.getZ(index) + this.weatherVelocity.z * delta;
+      if (x > 66) x = -66;
+      if (z > 48) z = -76;
+      if (y > 16) y = profile.weather === "starlight" ? 0.8 : 1.2;
+      if (profile.weather === "mist") y += Math.sin(phase + index * 0.37) * delta * 0.08;
+      attribute.setXYZ(index, x, y, z);
+    }
+    attribute.needsUpdate = true;
+    const material = this.weatherParticles.material as THREE.PointsMaterial;
+    if (profile.weather === "starlight") material.opacity = 0.32 + Math.sin(phase * 1.7) * 0.12;
   }
 
   private updateDay(delta: number): void {
@@ -3947,10 +4797,6 @@ function makeWindWornMound(
     const workshopBonus = this.state.relics.filter((entry) => entry === "workshop").length;
     const moduleCoin = this.state.regionModule === "caravan-yard" ? 2 : 0;
     const rates = { coin: Math.ceil((1 + moduleCoin + marketIncome * (this.state.regionId === "oasis" ? 1.25 : 1)) * efficiency), wood: 0, stone: 0, gear: 0 };
-    // 军需库把“商栈的高等级石台”转换成稳定的材料补给，避免整局只等一座工坊的轮换。
-    for (const building of markets) {
-      if (building.level >= 3 && this.activeSpecialization(building) === "supply") rates[currentMaterial] += building.hp > 0 ? 1 : 0;
-    }
     workshops.forEach((building) => {
       const healthFactor = building.hp > 0 ? 1 : 0.5;
       const amount = Math.max(1, Math.floor((1 + (building.level - 1) * 0.58 + workshopBonus) * healthFactor));
@@ -3976,6 +4822,24 @@ function makeWindWornMound(
       for (const key of Object.keys(rates) as ResourceKey[]) {
         this.state.resources[key] += rates[key];
       }
+      // 商栈把过量钱币转成真实订单：保留一笔建造储备，再按木材、石料、机巧轮换采购。
+      // 远征贸易成本较低；极限守城的运输受压，单份订单更贵。
+      const materialWeights = { wood: 1.2, stone: 1, gear: 0.65 } as const;
+      const orderMaterial = (["wood", "stone", "gear"] as const)
+        .slice()
+        .sort((a, b) => this.state!.resources[a] / materialWeights[a] - this.state!.resources[b] / materialWeights[b])[0]!;
+      const workingMarkets = this.state.buildings.filter((building) => building.type === "market" && building.hp > 0);
+      for (const market of workingMarkets) {
+        const specialization = market.level >= 3 ? this.activeSpecialization(market) : null;
+        if (specialization === "caravan") continue;
+        const units = specialization === "supply" ? 2 : 1;
+        const unitCost = this.state.mode === "survival" ? 3 : 2;
+        const reserve = 12 + Math.min(12, Math.floor(this.state.epoch / 3) * 2);
+        const affordableUnits = Math.min(units, Math.max(0, Math.floor((this.state.resources.coin - reserve) / unitCost)));
+        if (affordableUnits <= 0) continue;
+        this.state.resources.coin -= affordableUnits * unitCost;
+        this.state.resources[orderMaterial] += affordableUnits;
+      }
       if (this.state.relics.includes("double-trade") && this.streams && this.streams.next("loot") < 0.18) {
         this.state.resources.coin += rates.coin;
         this.setPrompt("ph-storefront", "商栈完成大宗订单，钱币收益翻倍");
@@ -4000,7 +4864,7 @@ function makeWindWornMound(
     this.state.phaseTime = 0;
     this.state.recentDamage = 0;
     this.state.nightSpeed = 1;
-    this.state.nightModifier ??= this.streams.pick("event", nightModifiers);
+    this.state.nightModifier ??= this.streams.pick("event", nightModifiersForEpoch(this.state.epoch));
     this.state.buildings.forEach((building) => {
       building.status ??= { productionPaused: false, targeted: false, lastHitAt: 0 };
       building.status.targeted = false;
@@ -4034,7 +4898,8 @@ function makeWindWornMound(
       directorGenerated.splice(-Math.max(1, Math.ceil(directorGenerated.length * 0.18)));
       this.state.scoutIntel = 0;
     }
-    const bossKind = this.state.tutorialStep < 3 ? null : bossForNight(this.state.epoch, regionById(this.state.regionId));
+    const tutorialWave = this.state.tutorialStep < 3;
+    const bossKind = tutorialWave ? null : bossForNight(this.state.epoch, regionById(this.state.regionId));
     this.state.bossKind = bossKind;
     if (bossKind) {
       directorGenerated.unshift(bossEnemyType(bossKind));
@@ -4048,12 +4913,16 @@ function makeWindWornMound(
       };
       this.setPrompt("ph-warning-diamond", `首领预警：${bossNames[bossKind]}即将抵达`);
     }
-    const wave = this.state.tutorialStep < 3 ? ["raider", "raider", "raider"] as const : directorGenerated;
+    const wave = tutorialWave ? ["raider", "raider", "raider"] as const : directorGenerated;
     this.spawnQueue = wave.map((type, index) => {
       const definition = enemies[type];
       const isBoss = Boolean(bossKind && index === 0);
       const elite = isBoss || (this.state!.epoch % 5 === 0 && index < 2);
-      const healthScale = enemyHealthScale(this.state!.epoch, this.state!.mode) * (isBoss ? 3.6 : elite ? 1.5 : 1);
+      // 首次三人教学波保留足够时间让玩家看见“接近、射击、撞门、击退”的完整反馈，
+      // 同时降低伤害，避免为了延长演示而把新手直接打崩。
+      const tutorialHealth = tutorialWave ? 2.2 : 1;
+      const tutorialDamage = tutorialWave ? 0.35 : 1;
+      const healthScale = enemyHealthScale(this.state!.epoch, this.state!.mode) * tutorialHealth * (isBoss ? 3.6 : elite ? 1.5 : 1);
       const combatSpeed = definition.speed
         * (1 + Math.min(0.18, this.state!.epoch * 0.009))
         * (this.state!.regionId === "mist" ? 0.88 : 1)
@@ -4068,7 +4937,7 @@ function makeWindWornMound(
         speed: combatSpeed,
         marchSpeed: combatSpeed * 1.6,
         combatSpeed,
-        damage: definition.damage * damageScale * (isBoss ? 1.55 : elite ? 1.28 : 1) * (this.state!.nightModifier?.enemyDamage ?? 1),
+        damage: definition.damage * damageScale * tutorialDamage * (isBoss ? 1.55 : elite ? 1.28 : 1) * (this.state!.nightModifier?.enemyDamage ?? 1),
         position: { x: (this.streams!.next("combat") - 0.5) * 5.8, z: -23.4 - (index % 3) * 0.65 },
         target: type === "flyer" ? "building" : "gate",
         targetId: null,
@@ -4084,7 +4953,10 @@ function makeWindWornMound(
         bossKind: isBoss ? bossKind : null,
         bossPhase: 0,
         attackRange: type === "archer" ? 15 : 1.6,
-        windupUntil: 0
+        windupUntil: 0,
+        bossAction: "advance",
+        bossSkillCooldown: isBoss ? 4.2 : 0,
+        bossTelegraphUntil: 0
       };
     });
     this.state.enemies = [];
@@ -4170,7 +5042,13 @@ function makeWindWornMound(
     const region = regionById(this.state?.regionId ?? "oasis");
     const root = new THREE.Group();
     let rig: CharacterRig | undefined;
-    if (enemy.type === "ram") {
+    if (enemy.type === "ram" && enemy.bossKind === "siege-beast") {
+      // 披甲攻城兽使用独立重型角色轮廓；普通攻城锤仍保留为器械单位，二者不再只是缩放差异。
+      rig = this.library.character("brute", 0x8f4f3f);
+      rig.setMoving(true);
+      rig.root.scale.set(1.35, 1.18, 1.5);
+      root.add(rig.root);
+    } else if (enemy.type === "ram") {
       const ram = this.library.model("siege-ram", region.accent);
       ram.scale.setScalar(1.5);
       ram.rotation.y = Math.PI;
@@ -4253,7 +5131,14 @@ function makeWindWornMound(
         root.add(bow);
       }
     }
-    const baseScale = enemy.bossKind ? 1.48 : enemy.elite ? 1.22 : 1;
+    if (enemy.bossKind) decorateBoss(root, enemy.bossKind, this.library, region.accent);
+    const bossScale: Partial<Record<BossKind, number>> = {
+      "shield-commander": 1.38,
+      "sapper-captain": 1.32,
+      "kite-swarm": 1.22,
+      "siege-beast": 1.48
+    };
+    const baseScale = enemy.bossKind ? bossScale[enemy.bossKind] ?? 1.36 : enemy.elite ? 1.22 : 1;
     root.scale.setScalar(baseScale);
     root.userData.baseScale = baseScale;
     root.position.set(enemy.position.x, enemy.type === "flyer" ? 3.2 : 0, enemy.position.z);
@@ -4263,7 +5148,8 @@ function makeWindWornMound(
     const label = document.createElement("button");
     label.type = "button";
     label.className = "enemy-world-label is-idle-status";
-    label.innerHTML = `<strong><b>${enemy.bossKind ? "首领 " : enemy.elite ? "精锐 " : ""}${enemies[enemy.type].name}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small></strong><span><i></i></span>`;
+    const displayName = enemy.bossKind ? bossDefinitions[enemy.bossKind].name : enemies[enemy.type].name;
+    label.innerHTML = `<strong><b>${enemy.elite && !enemy.bossKind ? "精锐 " : ""}${displayName}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small></strong><span><i></i></span>`;
     label.addEventListener("click", () => this.selectEnemy(enemy.id));
     this.hud.buildingLabels.appendChild(label);
     this.enemyObjects.set(enemy.id, { object: root, rig, flash: 0, stolen: false, label });
@@ -4275,7 +5161,8 @@ function makeWindWornMound(
     if (!enemy) return;
     this.selectedEnemyId = id;
     enemy.targetedUntil = performance.now() + 4500;
-    this.setPrompt("ph-crosshair", `${enemies[enemy.type].name} ${Math.ceil(enemy.hp)}/${enemy.maxHp} 生命`);
+    const name = enemy.bossKind ? bossDefinitions[enemy.bossKind].name : enemies[enemy.type].name;
+    this.setPrompt("ph-crosshair", `${name} ${Math.ceil(enemy.hp)}/${enemy.maxHp} 生命`);
   }
 
   private updateEnemies(delta: number): void {
@@ -4284,6 +5171,14 @@ function makeWindWornMound(
     for (const enemy of this.state.enemies) {
       const visual = this.enemyObjects.get(enemy.id);
       if (!visual) continue;
+      enemy.bossSkillCooldown = Math.max(0, enemy.bossSkillCooldown - delta);
+      this.updateBossBehavior(enemy, visual, now);
+      visual.object.userData.bossAction = enemy.bossAction;
+      visual.object.userData.bossPhase = enemy.bossPhase;
+      if (enemy.bossKind && enemy.bossAction !== "advance") {
+        visual.rig?.setMoving(false);
+        continue;
+      }
       const playerOutside = this.playerRig && !this.isInsideFort(this.playerRig.root.position);
       if (playerOutside && (enemy.type === "raider" || enemy.type === "looter" || enemy.type === "archer") && visual.object.position.z < -10.5) {
         enemy.target = "player";
@@ -4323,7 +5218,14 @@ function makeWindWornMound(
       const attackRange = enemy.type === "archer"
         ? (enemy.target === "player" ? 12.5 : isTargetingFortification ? 10.5 : enemy.attackRange)
         : enemy.type === "ram" ? 2.6 : 1.55;
+      if (enemy.type === "archer" && enemy.windupUntil > now && distance <= attackRange) {
+        const aim = destination.clone().sub(visual.object.position).setY(0);
+        visual.object.rotation.y = Math.atan2(aim.x, aim.z);
+        visual.rig?.setMoving(false);
+        continue;
+      }
       if (distance > attackRange) {
+        if (enemy.type === "archer") enemy.windupUntil = 0;
         const direction = destination.clone().sub(visual.object.position).setY(0).normalize();
         const gateDistance = visual.object.position.distanceTo(new THREE.Vector3(0, visual.object.position.y, -13.1));
         const currentSpeed = gateDistance > 18 ? enemy.marchSpeed : enemy.combatSpeed;
@@ -4341,6 +5243,7 @@ function makeWindWornMound(
         direction.addScaledVector(separation, 1.35).normalize();
         const barricadeFactor = blockingFortification?.branch === "sand" ? 0.42 : 0.68;
         visual.object.position.addScaledVector(direction, currentSpeed * (isSlowed ? 0.56 : isBarricaded ? barricadeFactor : 1) * delta);
+        visual.rig?.setMoving(true);
         if (blockingFortification) {
           const hasFireSupport = this.state.buildings.some((building) => building.type === "fire" && building.hp > 0);
           const contactDamage = blockingFortification.branch === "spike"
@@ -4354,9 +5257,17 @@ function makeWindWornMound(
         enemy.position.x = visual.object.position.x;
         enemy.position.z = visual.object.position.z;
       } else if (enemy.attackCooldown <= 0) {
+        visual.rig?.setMoving(false);
+        if (enemy.type === "archer" && enemy.windupUntil === 0) {
+          enemy.windupUntil = now + 520;
+          enemy.attackCooldown = 0.52;
+          visual.rig?.setMoving(false);
+          visual.rig?.attack();
+          continue;
+        }
+        if (enemy.type === "archer") enemy.windupUntil = 0;
         enemy.attackCooldown = enemy.type === "ram" ? 2 : enemy.type === "archer" ? 1.65 : 1.15;
-        if (enemy.type === "archer") enemy.windupUntil = now + 420;
-        visual.rig?.attack();
+        if (enemy.type !== "archer") visual.rig?.attack();
         const fortification = this.state.fortifications.find((entry) => entry.built && entry.hp > 0 && entry.lane === enemy.lane && enemy.type !== "flyer");
         if (fortification && enemy.target === "gate" && visual.object.position.z < -16.8) {
           const damage = enemy.damage * (enemy.type === "sapper" ? 1.7 : enemy.type === "archer" ? 0.78 : 1);
@@ -4447,23 +5358,145 @@ function makeWindWornMound(
         visual.flash -= delta;
         const baseScale = Number(visual.object.userData.baseScale ?? 1);
         visual.object.scale.setScalar(baseScale * (1 + visual.flash * 0.16));
+        visual.object.rotation.z = Math.sin(visual.flash * 38) * 0.08;
       } else {
         visual.object.scale.setScalar(Number(visual.object.userData.baseScale ?? 1));
+        visual.object.rotation.z = THREE.MathUtils.damp(visual.object.rotation.z, 0, 18, delta);
       }
       if (enemy.bossKind) {
         const ratio = enemy.hp / Math.max(1, enemy.maxHp);
-        const phase = ratio <= 0.3 ? 2 : ratio <= 0.65 ? 1 : 0;
+        const thresholds = bossDefinitions[enemy.bossKind].phaseThresholds;
+        const phase = ratio <= thresholds[1] ? 2 : ratio <= thresholds[0] ? 1 : 0;
         if (phase > enemy.bossPhase) {
           enemy.bossPhase = phase as 0 | 1 | 2;
-          enemy.combatSpeed *= 1.1;
-          enemy.marchSpeed *= 1.08;
-          enemy.damage *= 1.12;
+          enemy.combatSpeed *= 1.04;
+          enemy.damage *= 1.05;
+          enemy.bossSkillCooldown = Math.min(enemy.bossSkillCooldown, 0.8);
           this.sound.warning();
           this.cameraShake = 0.32;
-          this.setPrompt("ph-warning", `首领进入第 ${phase + 1} 阶段，攻击节奏加快`);
+          this.setPrompt("ph-warning", `${bossDefinitions[enemy.bossKind].name}进入第 ${phase + 1} 阶段，新战术即将发动`);
         }
       }
     }
+  }
+
+  private updateBossBehavior(enemy: EnemyState, visual: EnemyVisual, now: number): void {
+    if (!this.state || !enemy.bossKind) return;
+    if (enemy.bossAction === "recover") {
+      if (now >= enemy.bossTelegraphUntil) enemy.bossAction = "advance";
+      return;
+    }
+    if (enemy.bossAction !== "advance") {
+      if (now >= enemy.bossTelegraphUntil) {
+        this.executeBossSkill(enemy, visual);
+        enemy.bossAction = "recover";
+        enemy.bossTelegraphUntil = now + 420;
+        enemy.bossSkillCooldown = bossDefinitions[enemy.bossKind].skillCooldown[enemy.bossPhase];
+      }
+      return;
+    }
+    if (enemy.bossSkillCooldown > 0) return;
+    const action: Record<BossKind, BossAction> = {
+      "shield-commander": enemy.bossPhase === 0 ? "formation" : "shockwave",
+      "sapper-captain": enemy.bossPhase === 0 ? "plant-charge" : "detonate",
+      "kite-swarm": enemy.bossPhase === 0 ? "split" : "dive",
+      "siege-beast": "charge"
+    };
+    enemy.bossAction = action[enemy.bossKind];
+    enemy.bossTelegraphUntil = now + (enemy.bossAction === "charge" || enemy.bossAction === "detonate" ? 1350 : 980);
+    enemy.windupUntil = enemy.bossTelegraphUntil;
+    enemy.attackCooldown = Math.max(enemy.attackCooldown, 1.1);
+    visual.rig?.attack();
+    const warnings: Record<BossAction, string> = {
+      advance: "", formation: "举盾列阵", shockwave: "震地冲击", "plant-charge": "布置炸药",
+      detonate: "连锁爆破", split: "释放子鸢", dive: "俯冲生产区", charge: "蓄力撞门", recover: ""
+    };
+    this.setPrompt("ph-warning-diamond", `${bossDefinitions[enemy.bossKind].name}：${warnings[enemy.bossAction]}`);
+    this.sound.warning();
+    this.burst(visual.object.position.clone().setY(1.2), enemy.bossKind === "kite-swarm" ? 0x6ca8ad : 0xc35b48, 8);
+  }
+
+  private executeBossSkill(enemy: EnemyState, visual: EnemyVisual): void {
+    if (!this.state || !enemy.bossKind) return;
+    const action = enemy.bossAction;
+    const phasePower = 1 + enemy.bossPhase * 0.22;
+    if (action === "formation") {
+      for (const ally of this.state.enemies) {
+        const allyVisual = this.enemyObjects.get(ally.id);
+        if (!allyVisual || ally.id === enemy.id || ally.heightLayer !== 0 || allyVisual.object.position.distanceTo(visual.object.position) > 12) continue;
+        ally.hp = Math.min(ally.maxHp, ally.hp + ally.maxHp * 0.08);
+        ally.targetedUntil = performance.now() + 900;
+        ally.protectedUntil = performance.now() + 3600;
+      }
+    } else if (action === "shockwave") {
+      if (this.playerRig && this.playerRig.root.position.distanceTo(visual.object.position) < 10) {
+        const away = this.playerRig.root.position.clone().sub(visual.object.position).setY(0).normalize();
+        this.playerRig.root.position.addScaledVector(away, 3.2);
+        this.state.player.hp = Math.max(1, this.state.player.hp - 14 * phasePower);
+      }
+      for (const [id, object] of this.buildingObjects) {
+        if (object.position.distanceTo(visual.object.position) < 15) this.buildingCooldowns.set(id, (this.buildingCooldowns.get(id) ?? 0) + 1.2);
+      }
+      this.cameraShake = 0.5;
+    } else if (action === "plant-charge" || action === "detonate" || action === "dive") {
+      const priorities = bossDefinitions[enemy.bossKind].preferredTargets;
+      const targets = this.state.buildings
+        .filter((building) => building.hp > 0)
+        .sort((a, b) => {
+          const pa = priorities.indexOf(a.type); const pb = priorities.indexOf(b.type);
+          return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb);
+        });
+      const target = targets[0];
+      if (target) {
+        const damageRatio = action === "detonate" ? 0.2 : action === "dive" ? 0.14 : 0.11;
+        target.hp = Math.max(0, target.hp - target.maxHp * damageRatio * phasePower);
+        target.status.targeted = true;
+        target.status.lastHitAt = performance.now();
+        target.status.productionPaused = target.hp <= 0;
+        const object = this.buildingObjects.get(target.id);
+        if (object) {
+          this.fireProjectile(visual.object.position.clone().setY(2.5), object.position.clone().setY(2), 0xd16448);
+          this.burst(object.position.clone().setY(1.8), 0xd16448, action === "detonate" ? 18 : 10);
+        }
+      } else {
+        this.state.coreHp = Math.max(0, this.state.coreHp - 18 * phasePower);
+      }
+    } else if (action === "split") {
+      for (const side of [-1, 1]) this.spawnBossFlyer(enemy, visual.object.position, side);
+    } else if (action === "charge") {
+      const damage = enemy.damage * (2.35 + enemy.bossPhase * 0.35);
+      if (this.state.gateHp > 0) {
+        this.state.gateHp = Math.max(0, this.state.gateHp - damage);
+        this.hitGate();
+      } else {
+        this.state.coreHp = Math.max(0, this.state.coreHp - damage * 0.72);
+        this.coreStatusTimer = 3;
+      }
+      visual.object.position.z += Math.min(3.8, Math.max(0, -12 - visual.object.position.z));
+      this.cameraShake = 0.58;
+    }
+    this.sound.hit();
+    this.state.nightSpeed = 1;
+    if (this.state.coreHp <= 0) this.endRun();
+  }
+
+  private spawnBossFlyer(parent: EnemyState, origin: THREE.Vector3, side: number): void {
+    if (!this.state) return;
+    const definition = enemies.flyer;
+    const scale = enemyHealthScale(this.state.epoch, this.state.mode) * 0.62;
+    const minion: EnemyState = {
+      id: `kite-${this.state.epoch}-${performance.now().toFixed(0)}-${side}`,
+      type: "flyer", hp: Math.round(definition.hp * scale), maxHp: Math.round(definition.hp * scale),
+      speed: definition.speed, marchSpeed: definition.speed * 1.25, combatSpeed: definition.speed,
+      damage: definition.damage * (1 + this.state.epoch * 0.035), position: { x: origin.x + side * 3, z: origin.z - 1.5 },
+      target: "building", targetId: null, attackCooldown: 0.6, slowedUntil: 0, targetedUntil: 0, elite: false,
+      lane: parent.lane, formationRank: parent.formationRank + side, collisionRadius: 0.65, attackSlot: -1, heightLayer: 1,
+      bossKind: null, bossPhase: 0, attackRange: 1.8, windupUntil: 0,
+      bossAction: "advance", bossSkillCooldown: 0, bossTelegraphUntil: 0
+    };
+    this.state.enemies.push(minion);
+    this.createEnemyVisual(minion);
+    this.assignEnemyTarget(minion, origin);
   }
 
   private assignEnemyTarget(enemy: EnemyState, from: THREE.Vector3): void {
@@ -4481,7 +5514,7 @@ function makeWindWornMound(
       shield: ["ballista", "fire"],
       raider: ["ballista", "fire", "market", "workshop"]
     };
-    const order = preferred[enemy.type] ?? [];
+    const order = enemy.bossKind ? bossDefinitions[enemy.bossKind].preferredTargets : preferred[enemy.type] ?? [];
     const candidates = this.state.buildings
       .filter((building) => building.hp > 0)
       .sort((a, b) => {
@@ -4490,7 +5523,7 @@ function makeWindWornMound(
         const priorityA = aPriority < 0 ? 99 : aPriority;
         const priorityB = bPriority < 0 ? 99 : bPriority;
         if (priorityA !== priorityB) return priorityA - priorityB;
-        return PAD_POSITIONS[a.padIndex]!.distanceTo(from) - PAD_POSITIONS[b.padIndex]!.distanceTo(from);
+        return this.zonePosition(a.padIndex).distanceTo(from) - this.zonePosition(b.padIndex).distanceTo(from);
       });
     const target = candidates[0];
     if (target) {
@@ -4560,7 +5593,8 @@ function makeWindWornMound(
         : 1;
       const antiRanged = nearest.type === "archer" && this.state.relics.includes("anti-ranged") ? 1.3 : 1;
       const bossDamage = nearest.bossKind ? 1 + this.state.relics.filter((entry) => entry === "boss-damage").length * 0.18 : 1;
-      const damage = definition.attack * building.level * (1 + damageBoost) * piercing * airMultiplier * siegeMultiplier * fireMultiplier * antiRanged * bossDamage;
+      const formationArmor = (nearest.protectedUntil ?? 0) > performance.now() ? 0.58 : 1;
+      const damage = definition.attack * building.level * (1 + damageBoost) * piercing * airMultiplier * siegeMultiplier * fireMultiplier * antiRanged * bossDamage * formationArmor;
       nearest.hp -= damage;
       nearest.targetedUntil = performance.now() + 650;
       if (building.type === "fire") {
@@ -4625,11 +5659,17 @@ function makeWindWornMound(
     const specializationBonus = building.type === "ballista" && building.level >= 3 && this.activeSpecialization(building) === "watch" ? 10 : 0;
     const levelBonus = Math.min(6, Math.max(0, building.level - 1) * 1.5);
     const moduleMultiplier = this.state?.regionModule === "high-ground" ? 1.12 : 1;
-    // 扩城后的后排石台距离城门更远，通过院墙上的传令标与抛射校准获得补偿射界。
-    // 这不是隐藏增伤：建造预览与选中射程圈都调用同一函数，显示的就是实际范围。
-    const pad = PAD_POSITIONS[building.padIndex];
-    const rearRelayBonus = pad ? Math.min(16, Math.max(0, pad.z - 4) * 0.88) : 0;
-    return (definition.range + specializationBonus + levelBonus + rearRelayBonus) * relicMultiplier * moduleMultiplier;
+    const regionId = this.state?.regionId;
+    const weatherMultiplier = regionId === "mist" && definition.range >= 20
+      ? 0.9
+      : regionId === "canyon" && building.type === "trebuchet"
+        ? 1.08
+        : regionId === "stardust" && (building.type === "antiair" || building.type === "ballista")
+          ? 1.05
+          : 1;
+    const zone = this.currentFortLayout().zones[building.padIndex];
+    const highGroundMultiplier = zone && zone.elevation >= 1 ? 1.12 : 1;
+    return (definition.range + specializationBonus + levelBonus) * relicMultiplier * moduleMultiplier * weatherMultiplier * highGroundMultiplier;
   }
 
   private cleanupEnemies(): void {
@@ -4639,8 +5679,9 @@ function makeWindWornMound(
       const visual = this.enemyObjects.get(enemy.id);
       if (visual) {
         this.burst(visual.object.position.clone().setY(1.2), 0xd6aa62, 10);
-        this.world.remove(visual.object);
         visual.label.remove();
+        visual.object.userData.defeated = true;
+        this.fallenVisuals.push({ object: visual.object, life: 0.58, direction: enemy.lane >= 0 ? 1 : -1 });
       }
       this.enemyObjects.delete(enemy.id);
       const lootMultiplier = this.state.nightModifier?.loot ?? 1;
@@ -4656,8 +5697,9 @@ function makeWindWornMound(
       }
       if (enemy.bossKind) {
         this.state.bossKills += 1;
-        this.state.resources.coin += 18;
-        this.state.resources.gear += 5;
+        const reward = bossDefinitions[enemy.bossKind];
+        this.state.resources.coin += reward.rewardCoin;
+        this.state.resources.gear += reward.rewardGear;
         this.setPrompt("ph-trophy", "首领已击败，本夜奖励至少为稀有品质");
       }
       this.state.kills += 1;
@@ -4668,6 +5710,7 @@ function makeWindWornMound(
 
   private finishNight(): void {
     if (!this.state) return;
+    this.hud.bossBar.classList.add("is-hidden");
     this.hud.enemyArrow.classList.add("is-hidden");
     this.updateLighting(false);
     this.state.phase = "clear";
@@ -4777,7 +5820,8 @@ function makeWindWornMound(
 
   private spawnChoices(kind: "relic" | "route", options: Array<{ id: string; color: number }>): void {
     this.clearChoices();
-    const xs = [-7.2, 0, 7.2];
+    const aspect = (this.canvas.clientWidth || window.innerWidth) / Math.max(1, this.canvas.clientHeight || window.innerHeight);
+    const xs = aspect > 1.9 ? [-15, 0, 15] : [-7.2, 0, 7.2];
     options.forEach((option, index) => {
       const pedestal = makePedestal(option.color, kind);
       pedestal.position.set(xs[index]!, 0, 1.2);
@@ -4788,6 +5832,32 @@ function makeWindWornMound(
         child.userData.choiceIndex = index;
         child.userData.choiceId = option.id;
       });
+      if (kind === "route") {
+        pedestal.getObjectByName("artifact")?.removeFromParent();
+        const routeId = option.id.split("|")[0]!;
+        const routeRegion = regionById(routeId);
+        const miniature = new THREE.Group();
+        if (routeId === "oasis") {
+          const palm = this.library.model("tree-small", 0x3f7d5b, 0.2);
+          palm.scale.setScalar(0.8); palm.position.set(-0.8, 1.7, 0.2); miniature.add(palm);
+          const water = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.75), new THREE.MeshStandardMaterial({ color: 0x3d8580, roughness: 0.24 }));
+          water.rotation.x = -Math.PI / 2; water.position.set(0.35, 1.78, 0); miniature.add(water);
+        } else if (routeId === "canyon") {
+          for (const [x, scale] of [[-0.9, 0.9], [0.7, 1.15]] as const) {
+            const rock = this.library.model("rocks-large", 0x874a39, 0.34); rock.scale.setScalar(scale); rock.position.set(x, 1.72, 0); miniature.add(rock);
+          }
+        } else if (routeId === "mist") {
+          const beacon = this.library.model("tower-hexagon-mid", 0x566b67, 0.36);
+          beacon.scale.setScalar(0.9); beacon.position.set(0, 1.72, 0); miniature.add(beacon);
+          const lamp = new THREE.PointLight(0xe0ad59, 0.8, 4); lamp.position.set(0, 3.2, 0); miniature.add(lamp);
+        } else {
+          const pier = this.library.model("tower-hexagon-base", 0x676270, 0.3);
+          pier.scale.setScalar(0.85); pier.position.set(0, 1.72, 0); miniature.add(pier);
+          const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.22, 0.45, 10), new THREE.MeshStandardMaterial({ color: routeRegion.accent, emissive: routeRegion.accent, emissiveIntensity: 0.45 }));
+          lens.rotation.z = Math.PI / 2; lens.position.set(0.5, 3.05, 0); miniature.add(lens);
+        }
+        pedestal.add(miniature);
+      }
       this.world.add(pedestal);
       this.choiceObjects.push(pedestal);
       const label = document.createElement("button");
@@ -4814,7 +5884,7 @@ function makeWindWornMound(
     this.positionWorldUi();
   }
 
-  private selectChoice(index: number): void {
+  private async selectChoice(index: number): Promise<void> {
     if (!this.state || !this.streams) return;
     const id = this.state.pendingChoices[index];
     if (!id) return;
@@ -4846,7 +5916,18 @@ function makeWindWornMound(
       }
     } else if (this.state.phase === "route") {
       const [regionId, moduleId] = id.split("|");
+      if (this.regionTransitioning) return;
+      this.regionTransitioning = true;
       this.state.regionId = regionId!;
+      try {
+        await this.library.ensureRegionBundle(regionId!);
+      } catch (error) {
+        this.state.regionId = this.activeVisualRegionId;
+        this.setPrompt("ph-warning", `区域资源包加载失败：${error instanceof Error ? error.message : regionId}`);
+        return;
+      } finally {
+        this.regionTransitioning = false;
+      }
       this.state.expansionLevel = Math.min(3, this.state.expansionLevel + 1);
       this.state.regionModule = (moduleId as GameState["regionModule"]) ?? this.state.regionModule;
       this.state.terrainVariant = Math.floor(this.streams.next("world") * 4);
@@ -4874,7 +5955,7 @@ function makeWindWornMound(
     this.state.phaseTime = this.state.dayLength;
     this.state.gathered = [];
     this.state.fieldObjective = null;
-    this.state.nightModifier = this.streams?.pick("event", nightModifiers) ?? null;
+    this.state.nightModifier = this.streams?.pick("event", nightModifiersForEpoch(this.state.epoch)) ?? null;
     this.state.nightSpeed = 1;
     const dayHeal = this.state.relics.filter((entry) => entry === "day-heal").length * 18;
     this.state.player.hp = Math.min(this.state.player.maxHp, this.state.player.hp + 18 + dayHeal);
@@ -4882,15 +5963,15 @@ function makeWindWornMound(
     if (this.state.epoch >= 3 && !this.meta.unlockedRegions.includes("stardust")) this.meta.unlockedRegions.push("stardust");
     this.buildWorld();
     const expansionMessage = this.state.tutorialStep === 4
-      ? "第二夜：点击商栈或弩塔进行升级；城门外三面施工旗是拒马位，点旗或底部拒马即可部署"
+      ? "第二夜：点击建筑可升级或迁移；城门外三处道路缺口可安装拒马"
       : this.state.mode === "survival"
       ? `固定驿站守至第 ${this.state.epoch} 夜。城外资源将逐渐减少，善用生产、维修与战利品`
       : this.state.expansionLevel === 1
-      ? "新院落已开放：可用 8 座建筑石台，火油塔与防空连弩蓝图已解锁"
+      ? "左右侧院已开放：8 处功能区可用；可点布局图标自动整理防线"
       : this.state.expansionLevel === 2
-        ? "第二后院已开放：可用 10 座建筑石台，能建立更完整的生产与防空体系"
+        ? "侧翼堡台已开放：10 处功能区可用；远程武器应部署到前墙与侧墙"
         : this.state.expansionLevel === 3
-          ? "终级后院已开放：可用 12 座建筑石台，震石投车蓝图已解锁"
+          ? "后勤院已开放：12 处功能区可用；生产后移，前排重新布防"
         : "第 1 夜备战，生产建筑正在持续工作";
     this.setPrompt("ph-storefront", expansionMessage);
     this.updateHud(true);
@@ -4956,19 +6037,48 @@ function makeWindWornMound(
     this.particles = this.particles.filter((particle) => particle.life > 0);
   }
 
+  private updateFallenVisuals(delta: number): void {
+    for (const fallen of this.fallenVisuals) {
+      fallen.life -= delta;
+      const progress = 1 - Math.max(0, fallen.life) / 0.58;
+      fallen.object.rotation.z = fallen.direction * Math.min(1.25, progress * 1.45);
+      fallen.object.position.y = Math.max(-0.28, fallen.object.position.y - delta * 0.48);
+      const scale = Number(fallen.object.userData.baseScale ?? 1) * (1 - progress * 0.12);
+      fallen.object.scale.setScalar(scale);
+    }
+    const finished = this.fallenVisuals.filter((fallen) => fallen.life <= 0);
+    finished.forEach((fallen) => this.world.remove(fallen.object));
+    this.fallenVisuals = this.fallenVisuals.filter((fallen) => fallen.life > 0);
+  }
+
   private updateLighting(night: boolean): void {
     const region = regionById(this.state?.regionId ?? "oasis");
     const sun = this.scene.getObjectByName("sun") as THREE.DirectionalLight | undefined;
     const ambient = this.scene.getObjectByName("ambient") as THREE.HemisphereLight | undefined;
+    const moonFill = this.scene.getObjectByName("moon-fill") as THREE.DirectionalLight | undefined;
     if (sun) {
-      sun.intensity = night ? 0.78 : 3.65;
-      sun.color.set(night ? 0x7890af : 0xffd8a1);
+      sun.intensity = night ? 1.04 * this.nightBrightness : 3.65;
+      sun.color.set(night ? 0x91acd2 : 0xffd8a1);
     }
-    if (ambient) ambient.intensity = night ? 0.72 : 1.16;
-    this.scene.background = new THREE.Color(night ? 0x142c38 : region.sky);
+    if (ambient) {
+      ambient.intensity = night ? 0.94 * this.nightBrightness : 1.16;
+      ambient.color.set(night ? 0xb6cde4 : 0xd8ccb4);
+      ambient.groundColor.set(night ? 0x273f49 : 0x294347);
+    }
+    if (moonFill) moonFill.intensity = night ? 0.42 * this.nightBrightness : 0;
+    this.world.traverse((object) => {
+      if (object.name === "fort-torch-light" && object instanceof THREE.PointLight) {
+        object.intensity = night ? Number(object.userData.baseIntensity ?? 2.65) * this.nightBrightness : 0.28;
+      }
+    });
+    const dayExposure = this.effectiveQuality === "low" ? 0.98 : 0.94;
+    this.renderer.toneMappingExposure = night ? dayExposure * (1.08 + (this.nightBrightness - 1) * 0.55) : dayExposure;
+    this.scene.background = new THREE.Color(night ? 0x203c4a : region.sky);
     if (this.scene.fog instanceof THREE.FogExp2) {
-      this.scene.fog.color.set(night ? 0x1f3940 : region.fog);
-      this.scene.fog.density = night ? 0.014 : 0.0068;
+      this.scene.fog.color.set(night ? 0x294955 : region.fog);
+      const profile = regionVisualProfiles[region.id] ?? regionVisualProfiles.oasis!;
+      const dayDensity = profile.weather === "mist" ? 0.0115 : profile.weather === "wind" ? 0.0082 : 0.0068;
+      this.scene.fog.density = night ? Math.max(0.0115, dayDensity * 1.18) : dayDensity;
     }
   }
 
@@ -4985,11 +6095,13 @@ function makeWindWornMound(
       gameover: "驿站失守"
     };
     const activeRegion = regionById(this.state.regionId);
+    const weatherRule = this.state.regionId === "mist" ? "雾降低远程射界" : this.state.regionId === "canyon" ? "峡风强化投射器械" : this.state.regionId === "stardust" ? "星砂强化机关与机巧" : "商路气候稳定";
+    this.hud.region.title = `${activeRegion.perk}；${weatherRule}`;
     const tutorialObjective = this.state.mode === "expedition" && !this.meta.seenTutorial && this.state.phase === "day"
       ? this.state.tutorialStep === 0
-        ? "第一步：选择底部商栈，再点击院内第一座发光石台"
+        ? "第一步：选择底部商栈，再点击后院发光地基"
         : this.state.tutorialStep === 1
-          ? "第二步：选择底部床弩，再点击第二座发光石台"
+          ? "第二步：选择底部床弩，再点击门楼发光地基"
           : this.state.tutorialStep === 2
             ? "防线已就绪：点击月亮，开始第一夜"
             : null
@@ -5007,7 +6119,7 @@ function makeWindWornMound(
       : "";
     this.hud.objective.textContent = tutorialObjective ?? (this.state.phase === "day"
       ? this.state.mode === "survival"
-        ? `固定 8 石台 · 战备压力 ${Math.round(this.state.readinessPressure * 20)}% · ${this.state.epoch % 3 === 0 ? "本夜后补给" : `再守 ${3 - this.state.epoch % 3} 夜补给`}${productionHint}`
+        ? `固定 8 处功能区 · 战备压力 ${Math.round(this.state.readinessPressure * 20)}% · ${this.state.epoch % 3 === 0 ? "本夜后补给" : `再守 ${3 - this.state.epoch % 3} 夜补给`}${productionHint}`
         : `${this.state.regionModule ? `区域战术：${({ "high-ground": "高台射界", "side-gate": "侧门防线", "caravan-yard": "商队院", "mechanism-emplacement": "机关阵地" } as const)[this.state.regionModule]} · ` : ""}探索或建设${productionHint}`
       : this.state.phase === "night"
         ? `过关条件：击退本夜全部 ${this.state.enemies.length + this.spawnQueue.length} 名敌军`
@@ -5055,6 +6167,13 @@ function makeWindWornMound(
     this.hud.gateUpgradeCost.innerHTML = this.formatCostMarkup(gateCost, true);
     this.hud.gateUpgrade.disabled = !this.canBuildNow();
     this.hud.gateUpgrade.classList.toggle("is-unaffordable", !canAfford(this.state.resources, gateCost));
+    const gateRepair = this.gateRepairQuote();
+    this.hud.gateRepairCost.innerHTML = gateRepair.restore > 0 ? this.formatCostMarkup(gateRepair.cost, true) : "完好";
+    this.hud.gateRepair.disabled = gateRepair.restore <= 0 || (this.state.phase !== "day" && this.state.phase !== "night");
+    this.hud.gateRepair.classList.toggle("is-unaffordable", gateRepair.restore > 0 && !canAfford(this.state.resources, gateRepair.cost));
+    this.hud.gateRepair.title = gateRepair.restore <= 0
+      ? "城门完好"
+      : `${gateRepair.emergency ? "夜间抢修" : "白天完整修缮"} ${Math.round(gateRepair.restore)} 耐久，消耗 ${this.formatCost(gateRepair.cost)}`;
     // 选中建筑的按钮也随生产结算即时刷新；材料刚好凑齐时不必关闭再点一次建筑。
     const selectedBuilding = this.selectedBuildingId
       ? this.state.buildings.find((building) => building.id === this.selectedBuildingId)
@@ -5076,6 +6195,8 @@ function makeWindWornMound(
         : selectedRepairAffordable ? `修理消耗：${this.formatCost(selectedRepairCost)}` : `还差：${this.formatMissingCost(selectedRepairCost)}`;
     }
     this.hud.endDay.style.display = this.state.phase === "day" ? "" : "none";
+    this.hud.autoDeploy.style.display = this.state.phase === "day" ? "" : "none";
+    this.hud.autoDeploy.disabled = this.state.phase !== "day" || this.state.enemies.length > 0;
     this.hud.speed.classList.toggle("is-hidden", this.state.phase !== "night");
     this.hud.speed.innerHTML = `<b>${this.state.nightSpeed}x</b>`;
     const modifier = this.state.nightModifier;
@@ -5088,6 +6209,18 @@ function makeWindWornMound(
       this.hud.modifier.title = modifier.description;
     }
     this.hud.enemyCount.textContent = `敌军 ${this.state.enemies.length + this.spawnQueue.length}`;
+    const activeBoss = this.state.enemies.find((enemy) => enemy.bossKind && enemy.hp > 0);
+    this.hud.bossBar.classList.toggle("is-hidden", !activeBoss || this.state.phase !== "night");
+    if (activeBoss?.bossKind) {
+      const actionNames: Record<BossAction, string> = {
+        advance: `第 ${activeBoss.bossPhase + 1} 阶段`, formation: "举盾列阵", shockwave: "震地预警",
+        "plant-charge": "埋设炸药", detonate: "连锁爆破", split: "释放子鸢", dive: "俯冲预警",
+        charge: "蓄力撞门", recover: "调整架势"
+      };
+      this.hud.bossName.textContent = bossDefinitions[activeBoss.bossKind].name;
+      this.hud.bossAction.textContent = actionNames[activeBoss.bossAction];
+      this.hud.bossHp.style.width = `${Math.max(0, activeBoss.hp / activeBoss.maxHp) * 100}%`;
+    }
     const objective = this.state.fieldObjective;
     this.hud.fieldObjective.classList.toggle("is-hidden", this.state.phase !== "day" || !objective || objective.completed);
     if (objective && !objective.completed && this.playerRig) {
@@ -5140,9 +6273,9 @@ function makeWindWornMound(
       label.classList.toggle("is-idle-status", !show);
     }
     const visibleEnemyIds = this.state.enemies
-      .filter((enemy) => enemy.elite || enemy.hp < enemy.maxHp || enemy.targetedUntil > performance.now() || enemy.id === this.selectedEnemyId || enemy.target === "building" || enemy.target === "core" || (enemy.type === "looter" && enemy.target === "gate"))
+      .filter((enemy) => !enemy.bossKind && (enemy.elite || enemy.hp < enemy.maxHp || enemy.targetedUntil > performance.now() || enemy.id === this.selectedEnemyId || enemy.target === "building" || enemy.target === "core" || (enemy.type === "looter" && enemy.target === "gate")))
       .sort((a, b) => Number(b.id === this.selectedEnemyId) - Number(a.id === this.selectedEnemyId) || a.hp / a.maxHp - b.hp / b.maxHp)
-      .slice(0, 6)
+      .slice(0, qualityPresets[this.effectiveQuality].maxVisibleHealthBars)
       .map((enemy) => enemy.id);
     for (const enemy of this.state.enemies) {
       const visual = this.enemyObjects.get(enemy.id);
@@ -5158,12 +6291,14 @@ function makeWindWornMound(
             : enemy.target === "core"
               ? "ph-house-line"
               : "ph-person-simple-run";
+        const enemyName = enemy.bossKind ? bossDefinitions[enemy.bossKind].name : enemies[enemy.type].name;
         strong.innerHTML = enemy.id === this.selectedEnemyId
-          ? `<b>${enemy.bossKind ? "首领 " : enemy.elite ? "精锐 " : ""}${enemies[enemy.type].name}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small>`
+          ? `<b>${enemy.elite && !enemy.bossKind ? "精锐 " : ""}${enemyName}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small>`
           : `<b aria-label="${enemies[enemy.type].name}${slowed ? "，已减速" : ""}"></b>`;
       }
       if (fill) fill.style.width = `${Math.max(0, enemy.hp / enemy.maxHp) * 100}%`;
-      visual.label.classList.toggle("is-idle-status", !visibleEnemyIds.includes(enemy.id));
+      visual.label.classList.toggle("is-protected", (enemy.protectedUntil ?? 0) > performance.now());
+      visual.label.classList.toggle("is-idle-status", Boolean(enemy.bossKind) || !visibleEnemyIds.includes(enemy.id));
     }
     if (force) this.positionWorldUi();
   }
@@ -5191,8 +6326,10 @@ function makeWindWornMound(
         if (!label) continue;
         const distance = playerPosition.distanceTo(resource.position);
         const routeSelected = resource.id === this.selectedResourceId;
+        const nearbyRadius = window.innerWidth < 700 ? 15 : 22;
         // 院内不让八个资源牌抢 HUD；出城后，附近资源和已点选资源才获得清晰标签。
-        label.classList.toggle("is-idle-status", !(routeSelected || (outside && distance < 29)));
+        const availableForGathering = this.state?.phase === "day";
+        label.classList.toggle("is-idle-status", !availableForGathering || !(routeSelected || (outside && distance < nearbyRadius)));
         this.positionElement(label, resource.position.clone().setY(4.25));
       }
     }
@@ -5271,10 +6408,14 @@ function makeWindWornMound(
       meta: this.meta
     };
     this.writeEnvelope(this.activeSlot, envelope);
-    document.querySelector("#resultEpoch")!.textContent = finished.mode === "training" ? `行至第 ${finished.adventure?.room ?? 1} 处营地` : `守至第 ${finished.epoch} 夜`;
+    document.querySelector("#resultEpoch")!.textContent = finished.mode === "training"
+      ? `行至第 ${finished.adventure?.room ?? 1} 处营地`
+      : finished.mode === "survival" ? `极限固守 ${finished.epoch} 夜` : `远征抵达第 ${finished.epoch} 夜`;
     document.querySelector("#resultStats")!.innerHTML = finished.mode === "training"
       ? `等级 ${finished.adventure?.level ?? 1}<br>获得装备 ${finished.adventure?.gear.length ?? 0}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`
-      : `击败敌军 ${finished.kills}<br>首领 ${finished.bossKills} · 事件 ${finished.eventsCompleted}<br>最终繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`;
+      : finished.mode === "survival"
+        ? `固定八处功能区 · 击败 ${finished.kills} 名敌军<br>精锐首领 ${finished.bossKills} · 战备压力 ${Math.round(finished.readinessPressure * 20)}%<br>剩余库存 ${Math.floor(finished.resources.coin + finished.resources.wood + finished.resources.stone + finished.resources.gear)} · 繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`
+        : `扩建至 ${6 + finished.expansionLevel * 2} 处功能区 · 击败 ${finished.kills} 名敌军<br>首领 ${finished.bossKills} · 商路事件 ${finished.eventsCompleted}<br>最终区域 ${regionById(finished.regionId).name} · 繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`;
     this.hud.root.classList.add("is-hidden");
     this.hud.waveClear.classList.add("is-hidden");
     this.hud.gameOver.classList.remove("is-hidden");

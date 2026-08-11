@@ -8,6 +8,7 @@ const loadingStatus = document.querySelector<HTMLElement>("#loadingStatus")!;
 const loadingProgress = document.querySelector<HTMLElement>("#loadingProgress")!;
 const fatal = document.querySelector<HTMLElement>("#fatalError")!;
 const fatalText = document.querySelector<HTMLElement>("#fatalText")!;
+document.querySelector<HTMLButtonElement>("#retryLoadBtn")?.addEventListener("click", () => window.location.reload());
 
 // 只异步注册项目实际使用的单一图标字体。CSS 不再携带整套 fill/SVG/TTF 回退，
 // 字体失败也不会阻止 WebGL 场景进入（按钮仍有 title 与文字语义）。
@@ -72,10 +73,10 @@ async function boot(): Promise<void> {
     });
 
     document.querySelector("#newGameBtn")?.addEventListener("click", () => {
-      game.newGame(selectedMode, "");
+      void game.newGame(selectedMode, "").catch((error) => showFatal(`区域资源加载失败：${error instanceof Error ? error.message : "未知错误"}`));
     });
     continueButton.addEventListener("click", () => {
-      game.continueGame();
+      void game.continueGame().catch((error) => showFatal(`存档区域加载失败：${error instanceof Error ? error.message : "未知错误"}`));
     });
     game.renderSaveSlots();
     document.querySelector("#exportSaveBtn")?.addEventListener("click", () => game.exportSaves());

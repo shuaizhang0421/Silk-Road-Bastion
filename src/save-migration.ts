@@ -67,6 +67,7 @@ export function migrateSaveEnvelope(value: unknown): SaveEnvelope | null {
         eventsCompleted: Number(candidate.run.eventsCompleted ?? 0),
         rarePity: Number(candidate.run.rarePity ?? 0),
         qualityTier: candidate.run.qualityTier ?? "auto",
+        weatherPhase: Number(candidate.run.weatherPhase ?? 0),
         assetVersion: ASSET_VERSION
       } satisfies Partial<GameState>;
       candidate.run.enemies = (candidate.run.enemies ?? []).map((enemy: Record<string, any>) => ({
@@ -74,7 +75,10 @@ export function migrateSaveEnvelope(value: unknown): SaveEnvelope | null {
         bossKind: enemy.bossKind ?? null,
         bossPhase: enemy.bossPhase ?? 0,
         attackRange: enemy.attackRange ?? (enemy.type === "archer" ? 15 : 1.6),
-        windupUntil: enemy.windupUntil ?? 0
+        windupUntil: enemy.windupUntil ?? 0,
+        bossAction: enemy.bossAction ?? "advance",
+        bossSkillCooldown: Number(enemy.bossSkillCooldown ?? 0),
+        bossTelegraphUntil: Number(enemy.bossTelegraphUntil ?? 0)
       }));
     }
     return candidate as SaveEnvelope;

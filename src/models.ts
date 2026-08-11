@@ -1,16 +1,25 @@
 import * as THREE from "three";
 import { FBXLoader } from "three/addons/loaders/FBXLoader.js";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { clone as skeletonClone } from "three/addons/utils/SkeletonUtils.js";
-import type { BuildingType, EnemyType, RegionDefinition } from "./types";
+import { regionAssetBundles } from "./asset-manifest";
+import type { BossKind, BuildingType, EnemyType, RegionDefinition } from "./types";
 
 const ASSET_ROOT = "./assets/models/kenney";
+const RUNTIME_VILLAGE_ROOT = "./assets/models/runtime";
 
 type CharacterKind = "ranger" | "raider" | "brute";
-type MaterialSurface = "stone" | "wood";
+type MaterialSurface = "stone" | "wood" | "iron" | "sand";
+
+interface SurfaceTextureSet {
+  color: THREE.Texture;
+  normal?: THREE.Texture;
+  roughness?: THREE.Texture;
+}
 
 // 运行时加载的原创材质由所有程序化建筑共用；只读贴图不会增加每座建筑的显存副本。
-const surfaceMaps: Partial<Record<MaterialSurface, THREE.Texture>> = {};
+const surfaceMaps: Partial<Record<MaterialSurface, SurfaceTextureSet>> = {};
 
 function makeCharacterShell(kind: CharacterKind, accent: number): THREE.Group {
   const group = new THREE.Group();
@@ -173,6 +182,8 @@ export class AssetLibrary {
   private models = new Map<string, THREE.Object3D>();
   private textures = new Map<CharacterKind, THREE.Texture>();
   private worldTextures = new Map<string, THREE.Texture>();
+  private loadedRegionId = "oasis";
+  private regionLoad?: Promise<void>;
   private characterBase?: THREE.Group;
   private idleClip?: THREE.AnimationClip;
   private runClip?: THREE.AnimationClip;
@@ -180,6 +191,7 @@ export class AssetLibrary {
   private heroAnimations: THREE.AnimationClip[] = [];
 
   constructor(onProgress: (loaded: number, total: number) => void) {
+    this.gltf.setMeshoptDecoder(MeshoptDecoder);
     this.manager.onProgress = (_url, loaded, total) => onProgress(loaded, total);
   }
 
@@ -212,14 +224,53 @@ export class AssetLibrary {
       });
       this.models.set(name, result.scene);
     });
+    const villageModels = {
+      "village-wall": "Wall_UnevenBrick_Straight",
+      "village-arch": "Wall_UnevenBrick_Door_Round",
+      "village-door-frame": "DoorFrame_Round_Brick",
+      "village-door": "Door_2_Round",
+      "village-window-wall": "Wall_UnevenBrick_Window_Wide_Round",
+      "village-crate": "Prop_Crate",
+      "village-wagon": "Prop_Wagon",
+      "village-fence": "Prop_WoodenFence_Single",
+      "village-balcony": "Balcony_Cross_Straight",
+      "village-chimney": "Prop_Chimney"
+    } as const;
+    const villageRuntimeRoot = window.matchMedia?.("(pointer: coarse)").matches
+      ? `${RUNTIME_VILLAGE_ROOT}/mobile`
+      : `${RUNTIME_VILLAGE_ROOT}/desktop`;
+    const villageJobs = Object.entries(villageModels).map(async ([alias, file]) => {
+      const result = await this.gltf.loadAsync(`${villageRuntimeRoot}/${file}.glb`);
+      result.scene.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        child.castShadow = true;
+        child.receiveShadow = true;
+      });
+      this.models.set(alias, result.scene);
+    });
 
     const heroJob = this.gltf.loadAsync("./assets/models/quaternius/character-animated.glb");
     const stoneSurfaceJob = this.textureLoader.loadAsync("./assets/art/silk-road-sandstone-v1.jpg");
     const woodSurfaceJob = this.textureLoader.loadAsync("./assets/art/silk-road-timber-v1.jpg");
     const courtyardPavingJob = this.textureLoader.loadAsync("./assets/art/silk-road-courtyard-paving-v1.jpg");
     const caravanRoadJob = this.textureLoader.loadAsync("./assets/art/silk-road-caravan-road-v1.jpg");
-    const regionGroundJobs = ["oasis", "canyon", "mist", "stardust"].map((region) => this.textureLoader.loadAsync(`./assets/art/region-${region}-ground-v1.jpg`));
-    const [character, idle, run, ranger, raider, brute, stoneSurface, woodSurface, courtyardPaving, caravanRoad, oasisGround, canyonGround, mistGround, stardustGround] = await Promise.all([
+    // 标题只需要绿洲轻量包；其他三区在进入区域时按需加载，避免首包同时下载四张地表。
+    const oasisGroundJob = this.textureLoader.loadAsync("./assets/art/region-oasis-ground-v1.jpg");
+    const pbrSurfaceJobs = ([
+      ["sand", "aerial_sand"],
+      ["stone", "old_sandstone_02"],
+      ["wood", "rough_wood"],
+      ["iron", "rusty_metal_05"]
+    ] as const).map(async ([surface, asset]) => {
+      const root = `./assets/materials/polyhaven/${asset}/${asset}`;
+      const [color, normal, roughness] = await Promise.all([
+        this.textureLoader.loadAsync(`${root}_diff_1k.jpg`),
+        this.textureLoader.loadAsync(`${root}_nor_gl_1k.jpg`),
+        this.textureLoader.loadAsync(`${root}_rough_1k.jpg`)
+      ]);
+      return [surface, { color, normal, roughness }] as const;
+    });
+    const [character, idle, run, ranger, raider, brute, stoneSurface, woodSurface, courtyardPaving, caravanRoad, oasisGround] = await Promise.all([
       this.fbx.loadAsync(`${ASSET_ROOT}/characters/model/characterMedium.fbx`),
       this.fbx.loadAsync(`${ASSET_ROOT}/characters/animations/idle.fbx`),
       this.fbx.loadAsync(`${ASSET_ROOT}/characters/animations/run.fbx`),
@@ -230,8 +281,9 @@ export class AssetLibrary {
       woodSurfaceJob,
       courtyardPavingJob,
       caravanRoadJob,
-      ...regionGroundJobs,
-      ...glbJobs
+      oasisGroundJob,
+      ...glbJobs,
+      ...villageJobs
     ]);
 
     for (const texture of [ranger, raider, brute]) {
@@ -249,7 +301,7 @@ export class AssetLibrary {
       texture.wrapS = THREE.RepeatWrapping;
       texture.wrapT = THREE.RepeatWrapping;
       texture.repeat.set(surface === "stone" ? 1.3 : 1.1, surface === "stone" ? 1.3 : 1.1);
-      surfaceMaps[surface] = texture;
+      surfaceMaps[surface] = { color: texture };
     }
     courtyardPaving.colorSpace = THREE.SRGBColorSpace;
     courtyardPaving.wrapS = THREE.RepeatWrapping;
@@ -260,14 +312,22 @@ export class AssetLibrary {
     caravanRoad.wrapT = THREE.RepeatWrapping;
     caravanRoad.repeat.set(1.18, 5.6);
     this.worldTextures.set("caravan-road", caravanRoad);
-    (["oasis", "canyon", "mist", "stardust"] as const).forEach((region, index) => {
-      const texture = [oasisGround, canyonGround, mistGround, stardustGround][index]!;
-      texture.colorSpace = THREE.SRGBColorSpace;
-      texture.wrapS = THREE.RepeatWrapping;
-      texture.wrapT = THREE.RepeatWrapping;
-      texture.repeat.set(4.2, 3.7);
-      this.worldTextures.set(`region-${region}`, texture);
-    });
+    this.prepareRegionTexture(oasisGround);
+    this.worldTextures.set("region-oasis", oasisGround);
+    const pbrSurfaces = await Promise.all(pbrSurfaceJobs);
+    for (const [surface, maps] of pbrSurfaces) {
+      maps.color.colorSpace = THREE.SRGBColorSpace;
+      for (const texture of [maps.color, maps.normal, maps.roughness]) {
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        const repeat = surface === "sand" ? 5.5 : surface === "stone" ? 1.5 : surface === "wood" ? 1.2 : 1.3;
+        texture.repeat.set(repeat, repeat);
+      }
+      surfaceMaps[surface] = maps;
+      this.worldTextures.set(`pbr-${surface}-color`, maps.color);
+      this.worldTextures.set(`pbr-${surface}-normal`, maps.normal);
+      this.worldTextures.set(`pbr-${surface}-roughness`, maps.roughness);
+    }
     const hero = await heroJob;
     hero.scene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
@@ -277,6 +337,52 @@ export class AssetLibrary {
     });
     this.heroBase = hero.scene;
     this.heroAnimations = hero.animations;
+  }
+
+  private prepareRegionTexture(texture: THREE.Texture): void {
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.repeat.set(4.2, 3.7);
+    texture.anisotropy = window.matchMedia?.("(pointer: coarse)").matches ? 2 : 4;
+  }
+
+  /** Load one regional visual pack and release the previous regional ground texture. */
+  async ensureRegionBundle(regionId: string): Promise<void> {
+    if (this.loadedRegionId === regionId && this.worldTextures.has(`region-${regionId}`)) return;
+    const bundle = regionAssetBundles[regionId];
+    if (!bundle) throw new Error(`未知区域资源包: ${regionId}`);
+    if (this.regionLoad) await this.regionLoad;
+    if (this.loadedRegionId === regionId && this.worldTextures.has(`region-${regionId}`)) return;
+    const cached = this.worldTextures.get(`region-${regionId}`);
+    if (cached) {
+      const previous = this.worldTextures.get(`region-${this.loadedRegionId}`);
+      if (previous && this.loadedRegionId !== "oasis") {
+        previous.dispose();
+        this.worldTextures.delete(`region-${this.loadedRegionId}`);
+      }
+      this.loadedRegionId = regionId;
+      return;
+    }
+    this.regionLoad = (async () => {
+      const path = bundle.desktopPaths[0];
+      if (!path) throw new Error(`区域资源包缺少地表: ${bundle.id}`);
+      const texture = await this.textureLoader.loadAsync(`./${path}`);
+      this.prepareRegionTexture(texture);
+      const previousKey = `region-${this.loadedRegionId}`;
+      const previous = this.worldTextures.get(previousKey);
+      if (previous && this.loadedRegionId !== "oasis") {
+        previous.dispose();
+        this.worldTextures.delete(previousKey);
+      }
+      this.worldTextures.set(`region-${regionId}`, texture);
+      this.loadedRegionId = regionId;
+    })();
+    try {
+      await this.regionLoad;
+    } finally {
+      this.regionLoad = undefined;
+    }
   }
 
   model(name: string, tint?: number, tintStrength = 0.16): THREE.Object3D {
@@ -306,12 +412,14 @@ export class AssetLibrary {
           ? "wood"
           : undefined;
       if (surface && surfaceMaps[surface]) {
+        const maps = surfaceMaps[surface]!;
         const materials = Array.isArray(child.material) ? child.material : [child.material];
         for (const material of materials) {
           if (!(material instanceof THREE.MeshStandardMaterial)) continue;
-          material.map = surfaceMaps[surface]!;
-          material.bumpMap = surfaceMaps[surface]!;
-          material.bumpScale = surface === "stone" ? 0.14 : 0.085;
+          material.map = maps.color;
+          material.normalMap = maps.normal ?? null;
+          material.normalScale.setScalar(surface === "stone" ? 0.7 : 0.48);
+          material.roughnessMap = maps.roughness ?? null;
           material.color.lerp(new THREE.Color(0xffffff), surface === "stone" ? 0.56 : 0.42);
           material.roughness = surface === "stone" ? 0.88 : 0.78;
           material.needsUpdate = true;
@@ -319,6 +427,29 @@ export class AssetLibrary {
       }
     });
     return copy;
+  }
+
+  hasModel(name: string): boolean {
+    return this.models.has(name);
+  }
+
+  /** Clone an authored module and normalize it to a predictable scene-space box. */
+  fittedModel(name: string, size: [number, number, number], tint?: number, tintStrength = 0.08): THREE.Object3D {
+    const object = this.model(name, tint, tintStrength);
+    object.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(object);
+    const measured = bounds.getSize(new THREE.Vector3());
+    const scale = Math.min(
+      measured.x > 0 ? size[0] / measured.x : 1,
+      measured.y > 0 ? size[1] / measured.y : 1,
+      measured.z > 0 ? size[2] / measured.z : 1
+    );
+    object.scale.multiplyScalar(scale);
+    object.updateMatrixWorld(true);
+    const fittedBounds = new THREE.Box3().setFromObject(object);
+    const center = fittedBounds.getCenter(new THREE.Vector3());
+    object.position.set(-center.x, -fittedBounds.min.y, -center.z);
+    return object;
   }
 
   worldTexture(name: string): THREE.Texture | undefined {
@@ -514,14 +645,16 @@ export class AssetLibrary {
 }
 
 function material(color: number, roughness = 0.84, metalness = 0.04, surface?: MaterialSurface): THREE.MeshStandardMaterial {
-  const map = surface ? surfaceMaps[surface] : undefined;
-  const materialColor = map ? new THREE.Color(color).lerp(new THREE.Color(0xffffff), surface === "stone" ? 0.58 : 0.48) : new THREE.Color(color);
-  return new THREE.MeshStandardMaterial({
+  const maps = surface ? surfaceMaps[surface] : undefined;
+  const materialColor = maps ? new THREE.Color(color).lerp(new THREE.Color(0xffffff), surface === "stone" ? 0.58 : 0.48) : new THREE.Color(color);
+  const result = new THREE.MeshStandardMaterial({
     color: materialColor,
     roughness,
     metalness,
-    ...(map ? { map, bumpMap: map, bumpScale: surface === "stone" ? 0.14 : 0.085 } : {})
+    ...(maps ? { map: maps.color, normalMap: maps.normal, roughnessMap: maps.roughness } : {})
   });
+  if (maps?.normal) result.normalScale.setScalar(surface === "stone" ? 0.7 : surface === "sand" ? 0.38 : 0.48);
+  return result;
 }
 
 function mesh(
@@ -539,8 +672,51 @@ function mesh(
   return result;
 }
 
-export function makeFortWallSegment(length: number, stoneColor = 0x9a7655): THREE.Group {
+export function makeFortWallSegment(length: number, stoneColor = 0x9a7655, library?: AssetLibrary): THREE.Group {
   const group = new THREE.Group();
+  if (library?.hasModel("village-wall")) {
+    // Author modules retain their own edge piers. A continuous recessed masonry spine and
+    // uninterrupted coping make those piers read as reinforcement, not as gaps between walls.
+    const spine = mesh(new THREE.BoxGeometry(length + 0.22, 3.98, 1.42), stoneColor, [0, 2.02, 0.08], [0, 0, 0], "stone");
+    spine.name = "continuous-wall-spine";
+    const plinth = mesh(new THREE.BoxGeometry(length + 0.42, 0.42, 1.92), 0x765b46, [0, 0.21, 0.08], [0, 0, 0], "stone");
+    plinth.name = "continuous-wall-plinth";
+    const coping = mesh(new THREE.BoxGeometry(length + 0.32, 0.3, 1.9), stoneColor, [0, 4.17, 0.02], [0, 0, 0], "stone");
+    coping.name = "continuous-wall-coping";
+    group.add(spine, plinth, coping);
+    if (length > 8 && library.hasModel("village-balcony")) {
+      for (const x of [-length * 0.27, length * 0.27]) {
+        const gallery = library.fittedModel("village-balcony", [Math.min(3.8, length * 0.24), 0.82, 1.18], 0x51382a, 0.08);
+        gallery.position.set(x, 3.38, -0.82);
+        group.add(gallery);
+      }
+    }
+    // Continuous inner and outer dressed faces conceal module-side borders. The authored
+    // modules remain underneath for depth, corners and silhouette, while the player reads
+    // one masonry curtain instead of a row of separate wall cards.
+    for (const side of [-1, 1]) {
+      const face = mesh(
+        new THREE.BoxGeometry(length + 0.08, 3.34, 0.14),
+        stoneColor,
+        [0, 2.03, side * 1.02],
+        [0, 0, 0]
+      );
+      face.name = side > 0 ? "continuous-wall-inner-face" : "continuous-wall-outer-face";
+      group.add(face);
+      for (const y of [1.1, 3.08]) {
+        const bondBeam = mesh(new THREE.BoxGeometry(length + 0.18, 0.16, 0.18), 0x554335, [0, y, side * 1.12]);
+        bondBeam.name = "continuous-wall-bond-beam";
+        group.add(bondBeam);
+      }
+    }
+    const capCount = Math.max(2, Math.floor(length / 2.25));
+    for (let index = 0; index <= capCount; index += 1) {
+      const crenel = mesh(new THREE.BoxGeometry(0.86, 0.7, 1.68), stoneColor, [0, 4.52, 0], [0, 0, 0], "stone");
+      crenel.position.x = -length * 0.5 + length * index / capCount;
+      group.add(crenel);
+    }
+    return group;
+  }
   const paleStone = material(stoneColor, 0.96, 0.04, "stone");
   const warmStone = material(0x866247, 0.98, 0.04, "stone");
   const darkStone = material(0x59483b, 0.98, 0.02, "stone");
@@ -615,13 +791,57 @@ export function makeFortWallSegment(length: number, stoneColor = 0x9a7655): THRE
       group.add(bracket);
     }
   }
+  if (library?.hasModel("village-wall")) {
+    const panelCount = Math.max(1, Math.round(length / 4.15));
+    const panelWidth = length / panelCount;
+    for (let index = 0; index < panelCount; index += 1) {
+      const panel = library.fittedModel("village-wall", [panelWidth + 0.12, 4.45, 1.54], stoneColor, 0.12);
+      panel.position.x += -length * 0.5 + panelWidth * (index + 0.5);
+      panel.position.z = -0.05;
+      group.add(panel);
+    }
+  }
   return group;
 }
 
-export function makeMarket(accent: number): THREE.Group {
+export function makeMarket(region: RegionDefinition, library: AssetLibrary): THREE.Group {
   const group = new THREE.Group();
-  group.add(mesh(new THREE.BoxGeometry(4.6, 0.35, 3.4), 0x71503b, [0, 0.2, 0], [0, 0, 0], "stone"));
-  group.add(mesh(new THREE.BoxGeometry(4.2, 2.7, 3), 0x9d7655, [0, 1.65, 0], [0, 0, 0], "wood"));
+  const accent = region.accent;
+  const masonry = region.id === "canyon" ? 0x8a4d3a : region.id === "mist" ? 0x586c67 : region.id === "stardust" ? 0x6a6672 : 0x9d7655;
+  const timber = region.id === "mist" ? 0x3f4b48 : region.id === "canyon" ? 0x563426 : 0x71503b;
+  if (library.hasModel("village-window-wall") && library.hasModel("village-wall")) {
+    const foundation = library.fittedModel("village-wall", [5.3, 0.55, 4.25], masonry, 0.16);
+    foundation.scale.y *= 0.18;
+    group.add(foundation);
+    const front = library.fittedModel("village-window-wall", [4.9, 3.1, 0.8], masonry, 0.18);
+    front.position.set(0, 0.35, 1.72);
+    group.add(front);
+    for (const side of [-1, 1]) {
+      const wall = library.fittedModel("village-wall", [3.55, 3.05, 0.72], masonry, 0.16);
+      wall.position.set(side * 2.18, 0.35, -0.05);
+      wall.rotation.y = Math.PI / 2;
+      group.add(wall);
+    }
+    const rear = library.fittedModel("village-wall", [4.9, 3.05, 0.72], masonry, 0.16);
+    rear.position.set(0, 0.35, -1.75);
+    group.add(rear);
+    const canopy = library.fittedModel("village-balcony", [5.35, 1.1, 2.25], accent, 0.22);
+    canopy.position.set(0, 2.55, 1.45);
+    group.add(canopy);
+    const wagon = library.fittedModel("village-wagon", [2.4, 1.55, 1.6], accent, 0.08);
+    wagon.position.set(-3.05, 0.02, 1.1);
+    wagon.rotation.y = 0.2;
+    group.add(wagon);
+    for (const [x, z, size] of [[1.55, 2.05, 0.72], [2.15, 1.72, 0.52], [1.9, 1.22, 0.46]] as const) {
+      const crate = library.fittedModel("village-crate", [size, size, size], timber, 0.08);
+      crate.position.set(x, 0.05, z);
+      crate.rotation.y = x * 0.31;
+      group.add(crate);
+    }
+    return group;
+  }
+  group.add(mesh(new THREE.BoxGeometry(4.6, 0.35, 3.4), timber, [0, 0.2, 0], [0, 0, 0], "stone"));
+  group.add(mesh(new THREE.BoxGeometry(4.2, 2.7, 3), masonry, [0, 1.65, 0], [0, 0, 0], "wood"));
   group.add(mesh(new THREE.ConeGeometry(3.2, 2, 4), accent, [0, 4, 0], [0, Math.PI / 4, 0]));
   group.add(mesh(new THREE.BoxGeometry(3.6, 0.18, 1.1), 0xc58e4e, [0, 1.45, 1.7], [-0.12, 0, 0]));
   for (const x of [-1.4, 0, 1.4]) {
@@ -630,14 +850,65 @@ export function makeMarket(accent: number): THREE.Group {
   const cloth = mesh(new THREE.PlaneGeometry(3.8, 1.2), accent, [0, 2.55, 1.52]);
   cloth.material = material(accent, 0.95);
   group.add(cloth);
+  if (library.hasModel("village-window-wall")) {
+    const facade = library.fittedModel("village-window-wall", [4.12, 2.75, 1.08], masonry, 0.22);
+    facade.position.set(0, 0.32, 1.23);
+    group.add(facade);
+  }
+  if (library.hasModel("village-wagon")) {
+    const wagon = library.fittedModel("village-wagon", [2.25, 1.45, 1.5], accent, 0.08);
+    wagon.position.set(-2.75, 0.02, 1.15);
+    wagon.rotation.y = 0.22;
+    group.add(wagon);
+  }
+  if (library.hasModel("village-crate")) {
+    for (const [x, z, scale] of [[1.5, 1.95, 0.66], [2.02, 1.72, 0.48]] as const) {
+      const crate = library.fittedModel("village-crate", [scale, scale, scale], 0x76513a, 0.08);
+      crate.position.set(x, 0.04, z);
+      crate.rotation.y = x * 0.35;
+      group.add(crate);
+    }
+  }
   return group;
 }
 
-export function makeWorkshop(accent: number): THREE.Group {
+export function makeWorkshop(region: RegionDefinition, library: AssetLibrary): THREE.Group {
   const group = new THREE.Group();
-  group.add(mesh(new THREE.CylinderGeometry(2.55, 2.8, 0.45, 8), 0x705747, [0, 0.25, 0], [0, 0, 0], "stone"));
-  group.add(mesh(new THREE.CylinderGeometry(2.25, 2.45, 3.1, 8), 0x84715c, [0, 1.95, 0], [0, 0, 0], "wood"));
-  group.add(mesh(new THREE.ConeGeometry(2.65, 1.75, 8), 0x365c5a, [0, 4.35, 0]));
+  const accent = region.accent;
+  const masonry = region.id === "canyon" ? 0x82503f : region.id === "mist" ? 0x526762 : region.id === "stardust" ? 0x65616e : 0x84715c;
+  const roof = region.id === "canyon" ? 0x4b342d : region.id === "mist" ? 0x334f50 : region.id === "stardust" ? 0x344f58 : 0x365c5a;
+  if (library.hasModel("village-window-wall") && library.hasModel("village-wall")) {
+    const front = library.fittedModel("village-window-wall", [4.7, 3.45, 0.82], masonry, 0.18);
+    front.position.set(0, 0.2, 1.55);
+    group.add(front);
+    for (const side of [-1, 1]) {
+      const wall = library.fittedModel("village-wall", [3.4, 3.4, 0.72], masonry, 0.16);
+      wall.position.set(side * 2.05, 0.2, -0.1);
+      wall.rotation.y = Math.PI / 2;
+      group.add(wall);
+    }
+    const rear = library.fittedModel("village-wall", [4.7, 3.4, 0.72], masonry, 0.16);
+    rear.position.set(0, 0.2, -1.72);
+    group.add(rear);
+    const roofModule = library.model("tower-hexagon-roof", roof, 0.24);
+    roofModule.scale.set(1.55, 1.18, 1.28);
+    roofModule.position.y = 3.34;
+    group.add(roofModule);
+    const chimney = library.fittedModel("village-chimney", [0.86, 2.8, 0.86], 0x665244, 0.12);
+    chimney.position.set(1.28, 2.42, -0.52);
+    group.add(chimney);
+    const gearMaterial = material(accent, 0.38, 0.56);
+    for (const [x, y, scale] of [[-1.15, 1.88, 0.62], [0.05, 1.55, 0.82], [1.2, 2.15, 0.48]] as const) {
+      const gear = new THREE.Mesh(new THREE.TorusGeometry(scale, 0.13, 10, 24), gearMaterial);
+      gear.position.set(x, y, 2.02);
+      gear.castShadow = true;
+      group.add(gear);
+    }
+    return group;
+  }
+  group.add(mesh(new THREE.CylinderGeometry(2.55, 2.8, 0.45, 8), masonry, [0, 0.25, 0], [0, 0, 0], "stone"));
+  group.add(mesh(new THREE.CylinderGeometry(2.25, 2.45, 3.1, 8), masonry, [0, 1.95, 0], [0, 0, 0], "wood"));
+  group.add(mesh(new THREE.ConeGeometry(2.65, 1.75, 8), roof, [0, 4.35, 0]));
   const gearMaterial = material(accent, 0.42, 0.48);
   for (const [x, y, scale] of [[-1.3, 2.1, 0.7], [0.15, 1.7, 0.95], [1.3, 2.35, 0.55]] as const) {
     const gear = new THREE.Mesh(new THREE.TorusGeometry(scale, 0.16, 8, 12), gearMaterial);
@@ -647,6 +918,17 @@ export function makeWorkshop(accent: number): THREE.Group {
   }
   const chimney = mesh(new THREE.CylinderGeometry(0.34, 0.45, 2.2, 8), 0x665244, [1.35, 4.35, -0.5], [0, 0, 0], "stone");
   group.add(chimney);
+  if (library.hasModel("village-window-wall")) {
+    const workshopFront = library.fittedModel("village-window-wall", [4.2, 3.05, 1.1], masonry, 0.22);
+    workshopFront.position.set(0, 0.34, 1.78);
+    group.add(workshopFront);
+  }
+  if (library.hasModel("village-chimney")) {
+    const authoredChimney = library.fittedModel("village-chimney", [0.92, 2.7, 0.92], 0x7c6049, 0.1);
+    authoredChimney.position.set(1.25, 2.65, -0.55);
+    group.add(authoredChimney);
+    chimney.visible = false;
+  }
   return group;
 }
 
@@ -672,9 +954,45 @@ export function makeFireTower(library: AssetLibrary, accent: number): THREE.Grou
   return group;
 }
 
-export function makeGatehouse(accent: number, stoneColor = 0x9a7655): THREE.Group {
+export function makeGatehouse(library: AssetLibrary, accent: number, stoneColor = 0x9a7655): THREE.Group {
   const group = new THREE.Group();
   group.userData.gate = true;
+  if (library.hasModel("village-arch") && library.hasModel("village-wall") && library.hasModel("village-door")) {
+    const arch = library.fittedModel("village-arch", [7.45, 5.2, 2.65], stoneColor, 0.12);
+    arch.position.set(0, 0.05, 0);
+    group.add(arch);
+    for (const side of [-1, 1]) {
+      const tower = library.fittedModel("village-wall", [3.75, 5.25, 3.45], stoneColor, 0.1);
+      tower.position.set(side * 5.05, 0, 0);
+      group.add(tower);
+      const gallery = library.fittedModel("village-balcony", [3.65, 0.95, 2.45], 0x4f392d, 0.08);
+      gallery.position.set(side * 5.05, 4.18, -0.72);
+      group.add(gallery);
+      const cap = library.model("tower-hexagon-roof", accent, 0.22);
+      cap.scale.set(0.92, 0.55, 0.78);
+      cap.position.set(side * 5.05, 4.72, 0);
+      group.add(cap);
+    }
+    for (const side of [-1, 1]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(side * 3.15, 0.18, -0.18);
+      pivot.name = side < 0 ? "gate-left" : "gate-right";
+      const door = library.fittedModel("village-door", [3.08, 3.95, 0.42], 0x4b3327, 0.12);
+      door.position.set(-side * 1.54, 0, 0);
+      pivot.add(door);
+      group.add(pivot);
+    }
+    for (const side of [-1, 1]) {
+      const brazier = library.model("tower-hexagon-base", 0x5d5143, 0.18);
+      brazier.scale.setScalar(0.32);
+      brazier.position.set(side * 4.92, 4.95, -0.15);
+      group.add(brazier);
+      const light = new THREE.PointLight(0xf09a47, 1.55, 13, 2);
+      light.position.set(side * 4.92, 5.65, -0.15);
+      group.add(light);
+    }
+    return group;
+  }
   const stone = material(stoneColor, 0.96, 0.04, "stone");
   const darkStone = material(0x66513f, 0.98, 0.04, "stone");
   const wood = material(0x3f2d22, 0.9, 0.04, "wood");
@@ -760,6 +1078,12 @@ export function makeGatehouse(accent: number, stoneColor = 0x9a7655): THREE.Grou
     pivot.add(ring);
     group.add(pivot);
   }
+  if (library.hasModel("village-arch")) {
+    const authoredArch = library.fittedModel("village-arch", [7.25, 4.72, 2.55], stoneColor, 0.14);
+    authoredArch.position.set(0, 0.05, 0.06);
+    authoredArch.name = "authored-gate-arch";
+    group.add(authoredArch);
+  }
   return group;
 }
 
@@ -783,11 +1107,49 @@ export function makeBarricade(): THREE.Group {
   return group;
 }
 
-export function makeCore(accent: number): THREE.Group {
+export function makeCore(accent: number, regionId = "oasis", library?: AssetLibrary): THREE.Group {
   const group = new THREE.Group();
+  const stoneColor = regionId === "canyon" ? 0x704437 : regionId === "mist" ? 0x4f625e : regionId === "stardust" ? 0x5d5967 : 0x665747;
+  const wallColor = regionId === "canyon" ? 0x87513d : regionId === "mist" ? 0x566b66 : regionId === "stardust" ? 0x66616d : 0x8d6b4d;
+  const roofColor = regionId === "canyon" ? 0x4b3a32 : regionId === "mist" ? 0x315257 : regionId === "stardust" ? 0x334f5a : 0x345b63;
+  if (library?.hasModel("village-window-wall") && library.hasModel("village-arch")) {
+    const base = library.fittedModel("village-wall", [7.4, 0.65, 6.2], stoneColor, 0.16);
+    base.scale.y *= 0.22;
+    group.add(base);
+    const front = library.fittedModel("village-arch", [6.6, 3.35, 0.92], wallColor, 0.16);
+    front.position.set(0, 0.32, 2.48);
+    group.add(front);
+    const rear = library.fittedModel("village-window-wall", [6.55, 3.35, 0.82], wallColor, 0.16);
+    rear.position.set(0, 0.32, -2.48);
+    group.add(rear);
+    for (const side of [-1, 1]) {
+      const wall = library.fittedModel("village-window-wall", [5.0, 3.35, 0.82], wallColor, 0.16);
+      wall.position.set(side * 3.02, 0.32, 0);
+      wall.rotation.y = Math.PI / 2;
+      group.add(wall);
+    }
+    const dome = new THREE.Mesh(new THREE.SphereGeometry(3.45, 40, 24, 0, Math.PI * 2, 0, Math.PI * 0.52), material(roofColor, 0.54, 0.18));
+    dome.scale.z = 0.82;
+    dome.position.y = 3.15;
+    dome.castShadow = true;
+    dome.receiveShadow = true;
+    group.add(dome);
+    const gallery = library.fittedModel("village-balcony", [6.7, 1.0, 2.1], accent, 0.18);
+    gallery.position.set(0, 2.55, 2.65);
+    group.add(gallery);
+    const lantern = mesh(new THREE.CylinderGeometry(0.22, 0.3, 0.64, 12), 0xe2ad55, [0, 3.18, 3.02]);
+    (lantern.material as THREE.MeshStandardMaterial).emissive.set(0xe2ad55);
+    (lantern.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.85;
+    lantern.name = "core-lantern";
+    group.add(lantern);
+    const light = new THREE.PointLight(0xe2ad55, 2.2, 16, 2);
+    light.position.set(0, 3.35, 3.05);
+    group.add(light);
+    return group;
+  }
   // 主帐以驿站内院的砖石基座、木构回廊和圆顶为主体；它是失败条件，也应当一眼可辨。
-  group.add(mesh(new THREE.BoxGeometry(7.1, 0.54, 5.9), 0x665747, [0, 0.27, 0], [0, 0, 0], "stone"));
-  group.add(mesh(new THREE.BoxGeometry(6.25, 2.8, 5.05), 0x8d6b4d, [0, 1.92, 0], [0, 0, 0], "wood"));
+  group.add(mesh(new THREE.BoxGeometry(7.1, 0.54, 5.9), stoneColor, [0, 0.27, 0], [0, 0, 0], "stone"));
+  group.add(mesh(new THREE.BoxGeometry(6.25, 2.8, 5.05), wallColor, [0, 1.92, 0], [0, 0, 0], "wood"));
   for (const x of [-2.45, 2.45]) {
     for (const z of [-1.85, 1.85]) {
       group.add(mesh(new THREE.CylinderGeometry(0.21, 0.25, 3.7, 10), 0x4e3526, [x, 2.16, z], [0, 0, 0], "wood"));
@@ -795,7 +1157,7 @@ export function makeCore(accent: number): THREE.Group {
   }
   const roofRim = mesh(new THREE.CylinderGeometry(3.72, 3.72, 0.2, 18), 0x436b70, [0, 3.34, 0]);
   group.add(roofRim);
-  const dome = new THREE.Mesh(new THREE.SphereGeometry(3.55, 28, 16, 0, Math.PI * 2, 0, Math.PI * 0.54), material(0x345b63, 0.62, 0.16));
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(3.55, 28, 16, 0, Math.PI * 2, 0, Math.PI * 0.54), material(roofColor, 0.62, 0.16));
   dome.scale.z = 0.82;
   dome.position.y = 3.28;
   dome.castShadow = true;
@@ -856,30 +1218,98 @@ export function makeBuildModel(type: BuildingType, library: AssetLibrary, region
   } else if (type === "fire") {
     wrapper.add(makeFireTower(library, region.accent));
   } else if (type === "market") {
-    wrapper.add(makeMarket(region.accent));
+    wrapper.add(makeMarket(region, library));
   } else {
-    wrapper.add(makeWorkshop(region.accent));
+    wrapper.add(makeWorkshop(region, library));
   }
   return wrapper;
 }
 
-export function makeResource(type: "wood" | "stone" | "gear", library: AssetLibrary, accent: number): THREE.Group {
+export function makeResource(type: "wood" | "stone" | "gear", library: AssetLibrary, accent: number, regionId = "oasis"): THREE.Group {
   const group = new THREE.Group();
   if (type === "wood") {
-    const tree = library.model(Math.random() > 0.5 ? "tree-large" : "tree-small", accent);
-    tree.scale.setScalar(1.7);
-    group.add(tree);
+    if (regionId === "mist" && library.hasModel("village-fence")) {
+      // 雾港木材来自拆下的码头板与系船桩，整齐靠岸堆放，不伪装成树木。
+      for (const [z, width, turn] of [[-0.48, 3.1, -0.08], [0.08, 2.7, 0.12], [0.58, 2.35, -0.04]] as const) {
+        const plank = library.fittedModel("village-fence", [width, 0.42, 0.46], 0x4b3d32, 0.18);
+        plank.position.set((z + 0.4) * 0.32, 0.12 + (z + 0.5) * 0.18, z);
+        plank.rotation.y = turn;
+        group.add(plank);
+      }
+      const bollard = library.fittedModel("village-chimney", [0.58, 1.05, 0.58], 0x48544f, 0.18);
+      bollard.position.set(-1.35, 0, 0.18);
+      group.add(bollard);
+      return group;
+    }
+    if (regionId === "canyon" && library.hasModel("village-fence")) {
+      // 峡谷木材是矿坑支护梁，呈井字形捆扎，来源与采石叙事一致。
+      for (const [x, z, rotation] of [[-0.35, -0.48, 0.06], [0.24, 0.42, -0.08], [-0.44, 0.48, Math.PI / 2]] as const) {
+        const beam = library.fittedModel("village-fence", [2.8, 0.45, 0.5], 0x523629, 0.16);
+        beam.position.set(x, 0.1 + Math.abs(z) * 0.18, z);
+        beam.rotation.y = rotation;
+        group.add(beam);
+      }
+      return group;
+    }
+    // 可采木材表现为路旁整理过的倒木，而不是一棵会被误认为永久障碍的树。
+    const bark = material(0x5a3a27, 0.96, 0.01, "wood");
+    const cut = material(0xb98b58, 0.88, 0.01, "wood");
+    for (const [x, z, length, radius, angle] of [[-0.32, -0.34, 2.65, 0.34, 0.18], [0.22, 0.2, 2.35, 0.3, -0.14], [0.52, -0.55, 1.95, 0.25, 0.28]] as const) {
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius * 1.04, length, 14), bark);
+      log.rotation.z = Math.PI * 0.5;
+      log.rotation.y = angle;
+      log.position.set(x, radius + 0.12, z);
+      log.castShadow = true;
+      group.add(log);
+      for (const side of [-1, 1]) {
+        const end = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.92, 14), cut);
+        end.rotation.y = side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5;
+        end.rotation.z = angle;
+        end.position.set(x + Math.cos(angle) * length * 0.5 * side, radius + 0.12, z - Math.sin(angle) * length * 0.5 * side);
+        group.add(end);
+      }
+    }
+    const rope = new THREE.Mesh(new THREE.TorusGeometry(0.58, 0.055, 7, 18), material(0xa68758, 0.96));
+    rope.rotation.y = Math.PI * 0.5;
+    rope.position.set(0, 0.48, 0);
+    group.add(rope);
   } else if (type === "stone") {
-    const rock = library.model(Math.random() > 0.5 ? "rocks-large" : "rocks-small", accent);
-    rock.scale.setScalar(1.65);
-    group.add(rock);
+    if (regionId === "canyon" && library.hasModel("village-wall")) {
+      const cutFace = library.fittedModel("village-wall", [3.1, 1.15, 1.25], 0x8c4f3d, 0.24);
+      cutFace.rotation.y = -0.12;
+      group.add(cutFace);
+    }
+    // 三层岩块共享同一地质色，避免单个规则石块像掉落道具。
+    for (const [name, x, z, scale, rotation] of [["rocks-large", -0.2, 0.05, 1.2, 0.2], ["rocks-small", 0.85, 0.45, 0.82, -0.7], ["rocks-small", -0.8, -0.5, 0.66, 0.9]] as const) {
+      const stoneTint = regionId === "canyon" ? 0x8b4f3e : regionId === "mist" ? 0x566966 : regionId === "stardust" ? 0x686473 : 0x71675e;
+      const rock = library.model(name, stoneTint, 0.24);
+      rock.position.set(x, 0, z);
+      rock.scale.setScalar(scale);
+      rock.rotation.y = rotation;
+      group.add(rock);
+    }
   } else {
-    const base = mesh(new THREE.CylinderGeometry(1.3, 1.6, 0.5, 8), 0x655c51, [0, 0.25, 0]);
-    const device = mesh(new THREE.DodecahedronGeometry(0.82, 0), accent, [0, 1.3, 0]);
-    (device.material as THREE.MeshStandardMaterial).metalness = 0.45;
-    (device.material as THREE.MeshStandardMaterial).emissive.set(accent);
-    (device.material as THREE.MeshStandardMaterial).emissiveIntensity = 0.25;
-    group.add(base, device);
+    // 机巧材料来自半埋的商旅机关残件，不再是一颗悬在八角台上的发光宝石。
+    const rock = library.model("rocks-small", 0x5d5953, 0.22);
+    rock.scale.setScalar(1.18);
+    const bronze = material(regionId === "stardust" ? 0x58787b : 0x8b6a3d, 0.52, 0.62);
+    const iron = material(regionId === "mist" ? 0x425a58 : 0x3f4748, 0.48, 0.74);
+    const axle = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.17, 2.1, 10), iron);
+    axle.position.set(0, 0.88, 0);
+    axle.rotation.z = Math.PI * 0.5;
+    axle.castShadow = true;
+    const largeGear = new THREE.Mesh(new THREE.TorusGeometry(0.72, 0.15, 8, 18), bronze);
+    largeGear.position.set(-0.38, 1.03, 0.05);
+    largeGear.rotation.y = Math.PI * 0.5;
+    const smallGear = new THREE.Mesh(new THREE.TorusGeometry(0.43, 0.11, 8, 16), iron);
+    smallGear.position.set(0.62, 0.75, 0.28);
+    smallGear.rotation.y = Math.PI * 0.5;
+    const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.36, 10), bronze);
+    pin.position.set(-0.38, 1.03, 0.05);
+    pin.rotation.z = Math.PI * 0.5;
+    const glint = new THREE.PointLight(accent, 0.42, 3.8, 2);
+    glint.position.set(0, 1.25, 0);
+    group.add(rock, axle, largeGear, smallGear, pin, glint);
   }
   return group;
 }
@@ -908,4 +1338,93 @@ export function enemyCharacterKind(type: EnemyType): CharacterKind {
   if (type === "ram") return "brute";
   if (type === "archer") return "ranger";
   return type === "shield" || type === "sapper" ? "brute" : "raider";
+}
+
+/**
+ * 首领以合法基础模型为骨架，再叠加原创装备与轮廓。附件全部挂在首领根节点上，
+ * 既能随骨骼基模移动，也能由运行时执行独立的蓄力、展开和受击动作。
+ */
+export function decorateBoss(root: THREE.Group, kind: BossKind, library: AssetLibrary, accent: number): void {
+  const darkMetal = material(0x39474a, 0.34, 0.72);
+  const bronze = material(0xa2783f, 0.38, 0.62);
+  const leather = material(0x4f3426, 0.94, 0.02, "wood");
+  const warning = material(kind === "kite-swarm" ? 0x57939b : 0xaa4f3f, 0.52, 0.28);
+
+  if (kind === "shield-commander") {
+    const shield = new THREE.Group();
+    shield.name = "boss-shield";
+    shield.position.set(-1.15, 2.05, 0.35);
+    const face = mesh(new THREE.BoxGeometry(1.62, 2.8, 0.24), 0x48595b, [0, 0, 0]);
+    const cap = mesh(new THREE.CylinderGeometry(0.82, 0.82, 0.24, 16, 1, false, 0, Math.PI), 0x48595b, [0, 1.4, 0], [Math.PI / 2, 0, 0]);
+    const spine = mesh(new THREE.BoxGeometry(0.18, 3.1, 0.34), 0xa2783f, [0, 0, 0.05]);
+    shield.add(face, cap, spine);
+    for (const x of [-0.58, 0.58]) for (const y of [-0.86, 0, 0.86]) {
+      shield.add(mesh(new THREE.SphereGeometry(0.09, 8, 6), 0xc39a59, [x, y, 0.2]));
+    }
+    const standard = library.model("flag-banner-long", 0x8d3f35, 0.42);
+    standard.scale.setScalar(1.35);
+    standard.position.set(0.78, 4.5, -0.2);
+    standard.name = "boss-standard";
+    root.add(shield, standard);
+  } else if (kind === "sapper-captain") {
+    const powderRig = new THREE.Group();
+    powderRig.name = "boss-powder-rig";
+    powderRig.position.set(0, 2.1, -0.7);
+    const rack = mesh(new THREE.BoxGeometry(1.55, 1.9, 0.48), 0x513526, [0, 0, 0], [0, 0, 0], "wood");
+    powderRig.add(rack);
+    for (const x of [-0.48, 0, 0.48]) {
+      const charge = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.23, 1.45, 10), warning);
+      charge.position.set(x, 0.03, -0.34);
+      charge.castShadow = true;
+      powderRig.add(charge);
+    }
+    const fuse = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.035, 6, 18, Math.PI * 1.4), bronze);
+    fuse.name = "boss-fuse";
+    fuse.position.set(0.42, 0.94, -0.48);
+    fuse.rotation.x = Math.PI / 2;
+    powderRig.add(fuse);
+    const shieldPlate = library.model("wall-pillar", accent, 0.52);
+    shieldPlate.scale.set(0.48, 0.72, 0.38);
+    shieldPlate.position.set(-0.96, 0.2, 0.2);
+    powderRig.add(shieldPlate);
+    root.add(powderRig);
+  } else if (kind === "kite-swarm") {
+    const array = new THREE.Group();
+    array.name = "boss-kite-array";
+    const wingMaterial = new THREE.MeshStandardMaterial({ color: 0x456f72, roughness: 0.68, metalness: 0.08, side: THREE.DoubleSide });
+    for (const side of [-1, 1]) {
+      const wing = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 1.5), wingMaterial);
+      wing.position.set(side * 2.15, 0.15, 0);
+      wing.rotation.set(-Math.PI / 2, 0, side * -0.18);
+      wing.name = "boss-kite-wing";
+      wing.castShadow = true;
+      array.add(wing);
+      const drone = library.model("flag-banner-long", accent, 0.48);
+      drone.scale.set(0.62, 0.62, 0.62);
+      drone.position.set(side * 2.3, 0.35, 0.12);
+      drone.rotation.z = side * 0.32;
+      array.add(drone);
+    }
+    const core = new THREE.Mesh(new THREE.DodecahedronGeometry(0.72, 1), darkMetal);
+    core.name = "boss-kite-core";
+    core.castShadow = true;
+    array.add(core);
+    root.add(array);
+  } else {
+    const armor = library.model("tower-hexagon-roof", 0x3e4b4d, 0.58);
+    armor.scale.set(1.08, 0.7, 1.42);
+    armor.position.set(0, 2.05, 0.08);
+    armor.rotation.y = Math.PI / 6;
+    armor.name = "boss-beast-armor";
+    const ramHead = library.model("wall-pillar", 0x50595a, 0.54);
+    ramHead.scale.set(0.52, 0.72, 0.52);
+    ramHead.position.set(0, 1.25, -2.18);
+    ramHead.rotation.x = Math.PI / 2;
+    ramHead.name = "boss-beast-head";
+    const harness = new THREE.Mesh(new THREE.TorusGeometry(1.35, 0.12, 8, 24), leather);
+    harness.rotation.x = Math.PI / 2;
+    harness.position.set(0, 1.2, -0.25);
+    root.add(armor, ramHead, harness);
+  }
+  root.userData.bossKind = kind;
 }

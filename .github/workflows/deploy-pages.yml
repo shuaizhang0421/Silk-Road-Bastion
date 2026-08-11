@@ -37,6 +37,10 @@ jobs:
         run: pnpm test:save
       - name: Test responsive UI contract
         run: pnpm test:ui
+      - name: Test four region bundles
+        run: pnpm test:regions
+      - name: Test onboarding flow
+        run: pnpm test:onboarding
       - name: Build static game
         run: pnpm build
       - name: Configure GitHub Pages

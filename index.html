@@ -27,9 +27,9 @@
           <h1>丝路堡垒</h1>
           <span>筑驿站，守商路，或踏上行者历练</span>
         </div>
-        <div class="menu-deck">
-          <div class="deck-heading">
-            <div><span id="modeKicker">守商路，逐夜扩建</span><mark>公开测试 v0.7.0</mark></div>
+          <div class="menu-deck">
+            <div class="deck-heading">
+              <div><span id="modeKicker">守商路，逐夜扩建</span><mark>公开测试 v0.8.0</mark></div>
             <small id="modeDescription">从一座小驿站出发，每 3 夜开辟新的防线。</small>
           </div>
         <div class="start-actions">
@@ -88,6 +88,9 @@
         <div id="gateWorldBar" class="world-bar gate-bar">
           <span><i class="ph ph-door"></i><b id="gateLevelLabel">城门 Lv.1</b><small id="gateHpText">260/260</small></span>
           <div><i id="gateHpFill"></i></div>
+          <button id="gateRepairBtn" type="button" title="修缮城门">
+            <i class="ph ph-hammer"></i><small id="gateRepairCost">修缮</small>
+          </button>
           <button id="gateUpgradeBtn" type="button" title="升级城门">
             <i class="ph ph-arrow-fat-up"></i><small id="gateUpgradeCost">18</small>
           </button>
@@ -111,6 +114,9 @@
           <button id="workshopModeBtn" class="is-hidden" type="button" title="切换工坊专精">
             <i class="ph ph-arrows-clockwise"></i><small id="workshopModeText">轮换</small>
           </button>
+          <button id="relocateBtn" type="button" title="白天免费迁移建筑">
+            <i class="ph ph-arrows-out-cardinal"></i><small id="relocateText">迁移</small>
+          </button>
           <button id="demolishBtn" type="button" title="拆除并返还部分材料">
             <i class="ph ph-trash"></i><small id="demolishRefund">返还</small>
           </button>
@@ -126,20 +132,34 @@
           <span id="enemyCount">敌袭</span>
         </div>
 
+        <div id="bossBar" class="boss-bar is-hidden" aria-live="polite">
+          <span><i class="ph ph-crown"></i><b id="bossName">首领</b><small id="bossAction">逼近城门</small></span>
+          <div><i id="bossHpFill"></i></div>
+        </div>
+
         <div id="fieldObjective" class="field-objective is-hidden">
           <i class="ph ph-compass"></i>
           <span id="fieldObjectiveText">城外事件</span>
         </div>
 
         <div class="top-actions">
-          <button id="soundBtn" title="声音" type="button"><i class="ph ph-speaker-high"></i></button>
-          <button id="pauseBtn" title="暂停" type="button"><i class="ph ph-pause"></i></button>
-          <button id="speedBtn" class="is-hidden" title="夜袭速度" type="button"><b>1x</b></button>
-          <button id="endDayBtn" title="提前入夜" type="button"><i class="ph ph-moon-stars"></i></button>
+          <button id="soundBtn" title="声音" aria-label="声音" type="button"><i class="ph ph-speaker-high"></i></button>
+          <button id="pauseBtn" title="暂停" aria-label="暂停" type="button"><i class="ph ph-pause"></i></button>
+          <button id="autoDeployBtn" title="白天一键合理布防" aria-label="白天一键合理布防" type="button"><i class="ph ph-layout"></i></button>
+          <button id="speedBtn" class="is-hidden" title="夜袭速度" aria-label="切换夜袭速度" type="button"><b>1x</b></button>
+          <button id="endDayBtn" title="提前入夜" aria-label="立即开始夜袭" type="button"><i class="ph ph-moon-stars"></i></button>
         </div>
         <section id="audioPanel" class="audio-panel is-hidden" aria-label="声音设置">
           <label>音乐 <input id="musicVolume" type="range" min="0" max="100" value="72"></label>
           <label>音效 <input id="effectsVolume" type="range" min="0" max="100" value="82"></label>
+          <label>夜亮 <input id="nightBrightness" type="range" min="80" max="135" value="108" aria-label="夜间亮度"></label>
+          <div class="quality-setting" role="group" aria-label="画质">
+            <span>画质</span>
+            <button type="button" data-quality="auto" class="is-active">自动</button>
+            <button type="button" data-quality="low">低</button>
+            <button type="button" data-quality="medium">中</button>
+            <button type="button" data-quality="high">高</button>
+          </div>
           <button id="muteAudioBtn" type="button"><i class="ph ph-speaker-high"></i>静音</button>
         </section>
 
@@ -200,6 +220,7 @@
         <i class="ph ph-warning-octagon"></i>
         <h2>无法进入驿站</h2>
         <p id="fatalText">当前浏览器无法启动 3D 场景。</p>
+        <button id="retryLoadBtn" type="button">重新加载</button>
       </section>
     </main>
     <script type="module" src="/src/main.ts"></script>

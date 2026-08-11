@@ -14,6 +14,8 @@
 - Kenney Castle Kit — CC0 1.0 Universal — https://kenney.nl/assets/castle-kit
 - Kenney Animated Characters packs — CC0 1.0 Universal — https://kenney.nl/assets
 - Quaternius RPG Characters — CC0 1.0 Universal — https://quaternius.com/packs/rpgcharacters.html
+- Quaternius Medieval Village MegaKit Standard — CC0 1.0 Universal — https://quaternius.com/packs/medievalvillagemegakit.html
+- Poly Haven textures — CC0 1.0 Universal — https://polyhaven.com/license
 
 许可证副本随运行时资产一同保存在 `public/assets/models/**/LICENSE.txt`。逐项来源、修改记录与原创生成素材说明见 `public/assets/ASSET_MANIFEST.md`。
 

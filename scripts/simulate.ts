@@ -1,4 +1,5 @@
 import { bossForNight, buildings, canAfford, createGame, directorWave, emptyMeta, enemies, enemyHealthScale, pay, regionById, relics, SeedStreams } from "../src/data";
+import { canBuildInZone, fortLayout } from "../src/fort-layout";
 
 const seeds = Array.from({ length: 100 }, (_, index) => `SILK-${String(index + 1).padStart(3, "0")}`);
 let generatedEpochs = 0;
@@ -53,12 +54,20 @@ for (const relic of relics) {
   const required = buildingSpecificEffects.get(relic.effect);
   if (required && relic.requiresBuilding !== required) throw new Error(`专属奖励 ${relic.name} 未绑定 ${required}，可能在无效时出现`);
 }
-const padPositions = [[-5.5, -5.2], [5.5, -5.2], [-12, -3], [12, -3], [-11, 4.2], [11, 4.2], [-6.5, 9.5], [6.5, 9.5], [-11.5, 14.2], [11.5, 14.2], [-7.2, 22.2], [7.2, 22.2]];
-for (const [x, z] of padPositions) {
-  const relay = Math.min(16, Math.max(0, z - 4) * 0.88);
-  const range = buildings.ballista.range! + relay;
-  const nearestLane = Math.min(...[-3.2, 0, 3.2].map((lane) => Math.hypot(x - lane, z + 17.5)));
-  if (nearestLane > range) throw new Error(`扩建石台 (${x},${z}) 存在床弩射程死区`);
+for (const [level, expected] of [[0, 6], [1, 8], [2, 10], [3, 12]] as const) {
+  const layout = fortLayout("expedition", level, null);
+  if (layout.zones.length !== expected) throw new Error(`远征扩建 ${level} 的功能区数量错误：${layout.zones.length}`);
+  for (const zone of layout.zones.filter((entry) => entry.type === "defense")) {
+    if (!zone.coveredLanes.length || !canBuildInZone("ballista", zone)) throw new Error(`城防位 ${zone.id} 没有有效敌军通道`);
+    const nearestLane = Math.min(...zone.coveredLanes.map((lane) => Math.hypot(zone.position.x - lane * 6.2, zone.position.z + 20.5)));
+    const realRange = buildings.ballista.range! * (zone.elevation > 0 ? 1.12 : 1);
+    if (nearestLane > realRange) throw new Error(`城防位 ${zone.id} 无法用真实床弩射程覆盖通道`);
+  }
+}
+const survivalLayout = fortLayout("survival", 3, null);
+if (survivalLayout.zones.length !== 8) throw new Error("极限守城没有固定为 8 处功能区");
+if (!survivalLayout.zones.some((zone) => zone.type === "logistics") || !survivalLayout.zones.some((zone) => zone.type === "defense")) {
+  throw new Error("极限守城功能区缺少生产与防御取舍");
 }
 if (enemyHealthScale(30, "expedition") <= enemyHealthScale(15, "expedition") * 1.35) throw new Error("敌军生命后期增长过缓或意外封顶");
 if (enemyHealthScale(15, "survival") <= enemyHealthScale(15, "expedition")) throw new Error("极限守城没有形成额外生命压力");

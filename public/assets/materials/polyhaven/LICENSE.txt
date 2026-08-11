@@ -1,0 +1,17 @@
+Poly Haven assets used by Silk Road Bastion are licensed under
+Creative Commons CC0 1.0 Universal.
+
+Official license statement:
+https://polyhaven.com/license
+
+CC0 legal tool:
+https://creativecommons.org/publicdomain/zero/1.0/
+
+Downloaded assets:
+- Aerial Sand
+- Old Sandstone 02
+- Rough Wood
+- Rusty Metal 05
+
+Downloaded on 2026-08-11 from official Poly Haven delivery URLs.
+Only the listed texture maps are redistributed with this project.

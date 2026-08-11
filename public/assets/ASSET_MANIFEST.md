@@ -1,6 +1,6 @@
 # 资产清单
 
-> v7 合规原则：运行时仅使用本清单所列原创、CC0 或逐项审核的 CC BY 资产；不加载其他游戏、影视或来源不明的远程素材。第三方代码声明见项目根目录 `THIRD_PARTY_NOTICES.md`。
+> v0.8 合规原则：运行时仅使用本清单所列原创、CC0 或逐项审核的 CC BY 资产；不加载其他游戏、影视或来源不明的远程素材。第三方代码声明见项目根目录 `THIRD_PARTY_NOTICES.md`。
 
 ## Kenney Castle Kit
 
@@ -37,6 +37,27 @@
 - 使用文件：`models/quaternius/character-animated.glb`
 - 项目修改：调整场景比例、阴影、材质色调，并接入待机与奔跑动画
 
+## Quaternius Medieval Village MegaKit Standard
+
+- 来源：https://quaternius.com/packs/medievalvillagemegakit.html
+- 官方分发：https://store.godotengine.org/asset/quaternius/medieval-village-megakit/
+- 许可证：Creative Commons CC0 1.0 Universal
+- 下载日期：2026-08-11
+- 使用文件：`models/runtime/desktop/` 与 `models/runtime/mobile/` 中 10 个同名 GLB：`Wall_UnevenBrick_Straight`、`Wall_UnevenBrick_Door_Round`、`DoorFrame_Round_Brick`、`Door_2_Round`、`Wall_UnevenBrick_Window_Wide_Round`、`Prop_Crate`、`Prop_Wagon`、`Prop_WoodenFence_Single`、`Balcony_Cross_Straight`、`Prop_Chimney`
+- 未随包发布：其余模型、原始 Blend/FBX/OBJ、高分辨率源纹理和示例场景
+- 项目修改：使用 glTF Transform 4.4.2 转换为 Meshopt 压缩、WebP 纹理的自包含 GLB；移动端版本采用更低纹理预算；统一比例、命名、碰撞、阴影和丝路砂岩/木构配色；重新组合为原创驿站门楼、墙面、商栈、工坊与商队停靠区
+- 许可证副本：`models/runtime/LICENSE.txt`
+
+## Poly Haven 四区域公共 PBR 材质
+
+- 来源与许可证说明：https://polyhaven.com/license
+- 许可证：Creative Commons CC0 1.0 Universal
+- 下载日期：2026-08-11
+- 使用资产：Aerial Sand、Old Sandstone 02、Rough Wood、Rusty Metal 05
+- 使用文件：每项 1K JPG 的 diffuse、OpenGL normal 与 roughness 贴图
+- 项目修改：统一平铺比例、色调、法线强度和移动端显存预算；砂地用于绿洲，旧砂岩经顶点混色用于峡谷、雾港与星砂地表和建筑；不使用示例渲染、网站标志或用户作品
+- 许可证记录：`materials/polyhaven/LICENSE.txt`
+
 ## 项目原创资产
 
 - 商栈、机巧工坊、火油塔、拒马、双开城门、门楼、驿站核心、遗物台和区域沙盘由项目代码实时组合生成。
@@ -53,14 +74,21 @@
 - 内容约束：正交俯视、无人物、无文字、无商标、无既有游戏角色、地标、地图或画风复刻
 - 项目修改：统一缩放为 1024 像素、JPEG 82 质量，设置为 Three.js 重复地表纹理；移动端与桌面端共享纹理并由渲染画质控制像素密度
 
-## 原创生成标题背景
+## v7 原创角色与首领组合件
+
+- 生成日期：2026-08-09
+- 使用方式：合法 CC0 骨骼基模仅提供基础人体与通用动作，身份轮廓、武器、甲胄、丝路纹样、阵营配色和首领技能部件由项目代码原创组合
+- 首领：盾卫统领的塔盾与军旗、爆破队长的火药架与引信、机械鸢群的丝翼阵列、披甲攻城兽的护甲与撞击架均为本项目独立设计
+- 动作：复用基模的通用待机、行走和攻击骨骼片段，并以项目逻辑编排瞄准前摇、列阵、埋雷、分裂、俯冲、蓄力和阶段转换；不提取或临摹其他游戏动作
+
+## 原创标题概念参考
 
 - 生成日期：2026-07-29
 - 原始参考文件：`../../design-references/art-source/title-fortress-original.png`（不随发布包上传）
-- 用途：游戏开始界面背景
+- 用途：动态 3D 首页的构图、光色与材质参考，不作为运行时背景图
 - 生成方式：OpenAI 图像生成工具，项目专用原创提示词
 - 内容约束：无文字、无商标、无现有游戏角色、无既有地图复刻
-- 项目修改：叠加本地标题界面、响应式裁切和暗部可读性遮罩
+- 项目修改：实际首页直接复用游戏内城墙、道路、建筑、角色、天气和灯光；概念图不进入发布包
 
 ## 原创生成应用图标
 
@@ -99,15 +127,23 @@
 - 内容约束：无文字、无商标、无现有游戏角色、无既有地图复刻
 - 项目修改：以 JPEG 82 质量压缩至约 736 KB 后作为共享 Three.js 贴图重复平铺；保留石板、砂砾和浅车辙，以使可探索商道在各区域地貌中清晰可辨
 
-## 原创生成丝路荒漠远景
+## 原创四区域连续高度场与动态远景
 
-- 生成日期：2026-08-01
-- 发布使用文件：`art/silk-road-panorama-v1.jpg`
-- 原始无损文件：`../../design-references/art-source/silk-road-panorama-v1.png`（不随发布包上传）
-- 用途：实时 3D 地图中城门之外的远处山地、绿洲和商路氛围层；不替代任何可交互模型
-- 生成方式：OpenAI 图像生成工具，项目专用原创提示词
-- 内容约束：无文字、无商标、无现有游戏角色、无既有地图或地标复刻
-- 项目修改：作为不可点击、无碰撞的远景平面接入 Three.js，并根据区域调节色彩与透明度
+- 生成日期：2026-08-11
+- 发布形式：`src/game.ts` 中按世界编号生成的分块高度场、地表混色、道路曲线、生态组群、动态天空与多层程序化山脉
+- 用途：连接基地、近郊探索区和远景地平线；远景不参与碰撞与寻路，运行时不再加载固定全景背景图
+- 原始构成：四区域地表贴图只提供微观砂石/湿土/岩层纹理，地形轮廓、坡度、道路、水域、地标和生态布局均由项目代码原创生成
+- 内容约束：不复刻任何现有游戏地图、地标、角色或视觉识别；世界编号只组合项目自有规则和已登记本地资产
+- 旧参考图：早期全景效果图已移至 `design-references/deprecated-panorama/`，不进入 `public/`、构建产物或运行时请求
+
+## 四区域独立运行包
+
+- 实现日期：2026-08-11
+- 包定义：`src/asset-manifest.ts` 中的 `regionAssetBundles`
+- 公共层：角色、敌人、城墙、门窗、货物、床弩、拒马和三类资源共用已登记的原创或 CC0 资产
+- 区域层：四张原创地表、区域顶点混色、独立道路轮廓、水体、天气、地标、生态组群和建筑配色
+- 加载策略：首页只加载绿洲预览；新开局、续玩或迁营时加载目标区域地表，离开后释放上一非绿洲区域纹理；其他三区不进入首屏下载
+- 回退策略：包加载失败时显示具体错误并中止迁营，不以未登记几何占位继续正式流程
 
 ## 原创生成丝路砂岩墙体
 

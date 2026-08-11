@@ -10,6 +10,7 @@ delete legacyRun.eventsCompleted;
 delete legacyRun.rarePity;
 delete legacyRun.qualityTier;
 delete legacyRun.assetVersion;
+delete legacyRun.weatherPhase;
 legacyRun.enemies = [{
   id: "legacy-enemy", type: "raider", hp: 40, maxHp: 40, speed: 3, marchSpeed: 4.8,
   combatSpeed: 3, damage: 8, position: { x: 0, z: -20 }, target: "gate", targetId: null,
@@ -25,6 +26,7 @@ delete legacyMeta.eventRecords;
 const migrated = migrateSaveEnvelope({ schema: "silk-road-bastion", version: 6, savedAt: 1, run: legacyRun, meta: legacyMeta });
 if (!migrated || migrated.version !== 7 || migrated.run?.version !== 7 || migrated.meta.version !== 7) throw new Error("v6 存档未升级到 v7");
 if (migrated.run.assetVersion.length < 3 || migrated.run.enemies[0]?.bossKind !== null) throw new Error("v7 新字段迁移不完整");
+if (typeof migrated.run.weatherPhase !== "number" || migrated.run.enemies[0]?.bossAction !== "advance") throw new Error("天气或首领动作默认值未迁移");
 if (migrated.run.seed !== "V6-MIGRATION" || migrated.run.resources.coin !== legacyRun.resources.coin) throw new Error("迁移未保留局内进度");
 if (!isSafeSaveEnvelope(migrated)) throw new Error("迁移后的合法存档未通过范围校验");
 const poisoned = structuredClone(migrated) as any;

@@ -11,6 +11,9 @@ export type RelicRarity = "common" | "rare" | "legendary";
 export type BossKind = "shield-commander" | "sapper-captain" | "kite-swarm" | "siege-beast";
 export type RegionModule = "high-ground" | "side-gate" | "caravan-yard" | "mechanism-emplacement";
 export type QualityTier = "auto" | "low" | "medium" | "high";
+export type BuildZoneType = "defense" | "courtyard" | "logistics" | "siege";
+export type BossAction = "advance" | "formation" | "shockwave" | "plant-charge" | "detonate" | "split" | "dive" | "charge" | "recover";
+export type WeatherKind = RegionDefinition["weather"];
 
 export interface Vec2 {
   x: number;
@@ -55,6 +58,78 @@ export interface BuildingState {
   status: BuildingStatus;
 }
 
+export interface BuildZoneDefinition {
+  id: string;
+  type: BuildZoneType;
+  position: Vec2;
+  rotation: number;
+  unlockExpansion: 0 | 1 | 2 | 3;
+  allowed: BuildingType[];
+  coveredLanes: number[];
+  elevation: number;
+}
+
+export interface FortLayoutDefinition {
+  id: string;
+  width: number;
+  depth: number;
+  expansionLevel: number;
+  zones: BuildZoneDefinition[];
+}
+
+export interface BuildingRelocationState {
+  buildingId: string;
+  originPadIndex: number;
+  hoveredPadIndex: number;
+}
+
+export interface FortExpansionDefinition {
+  level: 0 | 1 | 2 | 3;
+  width: number;
+  depth: number;
+  unlockedZoneIds: string[];
+}
+
+export interface FortificationSocket {
+  lane: number;
+  position: Vec2;
+  rotation: number;
+  interactionRadius: number;
+}
+
+export interface TerrainChunkDefinition {
+  id: string;
+  center: Vec2;
+  size: Vec2;
+  resolution: number;
+  lod: 0 | 1 | 2;
+}
+
+export interface SurfaceLayerDefinition {
+  id: "packed" | "rock" | "sand" | "wet" | "vegetation" | "road";
+  color: number;
+  roughness: number;
+  minSlope?: number;
+  maxSlope?: number;
+  minHeight?: number;
+  maxHeight?: number;
+}
+
+export interface RoadSplineDefinition {
+  id: string;
+  points: Vec2[];
+  width: number;
+  stoneCoverage: number;
+  walkable: boolean;
+}
+
+export interface GateRepairQuote {
+  restore: number;
+  cost: Partial<Resources>;
+  fullRepair: boolean;
+  emergency: boolean;
+}
+
 export interface EnemyTarget {
   type: EnemyTargetType;
   id: string | null;
@@ -85,6 +160,134 @@ export interface EnemyState {
   bossPhase: 0 | 1 | 2;
   attackRange: number;
   windupUntil: number;
+  bossAction: BossAction;
+  bossSkillCooldown: number;
+  bossTelegraphUntil: number;
+  protectedUntil?: number;
+}
+
+export interface BossDefinition {
+  kind: BossKind;
+  name: string;
+  enemyType: EnemyType;
+  silhouette: "tower-shield" | "powder-rig" | "kite-array" | "armored-beast";
+  phaseThresholds: readonly [number, number];
+  skillCooldown: readonly [number, number, number];
+  rewardCoin: number;
+  rewardGear: number;
+  preferredTargets: BuildingType[];
+}
+
+export interface RegionVisualProfile {
+  regionId: string;
+  weather: WeatherKind;
+  weatherColor: number;
+  weatherDensity: number;
+  landmark: "oasis-channel" | "quarry-terraces" | "harbor-beacon" | "astral-ring";
+  pathColor: number;
+  boundaryColor: number;
+  terrainAmplitude: number;
+  horizonColor: number;
+  surfaceLayers: SurfaceLayerDefinition[];
+  groundTexture: string;
+  roadStyle: "caravan-earth" | "quarry-haul" | "raised-causeway" | "observatory-axis";
+  waterStyle: "canal" | "none" | "marsh" | "mineral-sheen";
+  ecologyClusterIds: readonly string[];
+  buildingPalette: readonly [number, number, number, number];
+  landmarkPosition: Vec2;
+}
+
+export interface AnimationSet {
+  idle: string;
+  run: string;
+  aim?: string;
+  attack?: string;
+  hit?: string;
+  defeat?: string;
+}
+
+export interface QualityPreset {
+  tier: Exclude<QualityTier, "auto">;
+  pixelRatio: number;
+  shadows: boolean;
+  shadowMapSize: number;
+  weatherParticles: number;
+  sceneryDensity: number;
+  maxVisibleHealthBars: number;
+}
+
+export interface AssetManifestEntry {
+  id: string;
+  path: string;
+  type: "model" | "texture" | "audio" | "font" | "generated-art";
+  author: string;
+  license: "Project Original" | "CC0-1.0" | "CC-BY-4.0";
+  source: string;
+  modified: string;
+}
+
+export interface VisualAssetDefinition {
+  id: string;
+  desktopPath: string;
+  mobilePath?: string;
+  lodDistances: readonly number[];
+  collider: "none" | "box" | "capsule" | "mesh";
+  materialSet?: string;
+  interactionAnchor?: string;
+  bundle: "common" | string;
+  triangleBudget?: readonly [number, number, number];
+  animations?: string;
+}
+
+export interface MaterialSetDefinition {
+  id: string;
+  colorPath: string;
+  normalPath?: string;
+  roughnessPath?: string;
+  metalnessPath?: string;
+  repeat: readonly [number, number];
+  colorSpace: "srgb" | "linear";
+  regionVariant?: string;
+  fallbackColor?: number;
+  mobileColorPath?: string;
+}
+
+export interface EnvironmentClusterDefinition {
+  id: string;
+  regionId: string;
+  assets: readonly string[];
+  minSpacing: number;
+  clearRadius: number;
+  placement: "water-edge" | "road-stop" | "slope-foot" | "rock-face" | "resource-pocket";
+  slopeRange: readonly [number, number];
+  waterDistance?: readonly [number, number];
+  roadDistance?: readonly [number, number];
+  boundaryDistance?: readonly [number, number];
+  density: number;
+  rotationRange: readonly [number, number];
+  exclusionTags: readonly string[];
+}
+
+export interface InteractionAnchor {
+  id: string;
+  radius: number;
+  approachOffsets: readonly Vec2[];
+  lineOfSightHeight: number;
+  bounds: readonly [number, number, number];
+  pathTolerance: number;
+}
+
+export interface RegionAssetBundle {
+  id: string;
+  regionId: string;
+  commonAssets: readonly string[];
+  regionAssets: readonly string[];
+  previewAssets: readonly string[];
+  desktopPaths: readonly string[];
+  mobilePaths: readonly string[];
+  loadStage: "title-preview" | "route-preview" | "region-entry";
+  release: "retain-preview" | "dispose-on-exit";
+  compressedBudgetMb: readonly [number, number];
 }
 
 export interface FortificationState {
@@ -246,6 +449,7 @@ export interface GameState {
   rarePity: number;
   qualityTier: QualityTier;
   assetVersion: string;
+  weatherPhase: number;
   fortifications: FortificationState[];
   adventure: AdventureState | null;
 }

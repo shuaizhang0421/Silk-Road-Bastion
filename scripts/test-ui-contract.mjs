@@ -16,9 +16,18 @@ if (!game.includes("resource-token cost-token ${key}-token")) {
   throw new Error("建造、升级与修理没有复用资源栏的统一图标生成器");
 }
 
-for (const id of ["gateUpgradeCost", "upgradeCost", "repairCost", "demolishRefund"]) {
+for (const id of ["gateUpgradeCost", "gateRepairCost", "upgradeCost", "repairCost", "demolishRefund", "relocateBtn", "autoDeployBtn"]) {
   if (!html.includes(`id="${id}"`)) throw new Error(`操作界面缺少成本或返还区域：${id}`);
 }
+
+for (const id of ["bossBar", "bossName", "bossAction", "bossHpFill"]) {
+  if (!html.includes(`id="${id}"`)) throw new Error(`首领战缺少简洁 HUD：${id}`);
+}
+for (const tier of ["auto", "low", "medium", "high"]) {
+  if (!html.includes(`data-quality="${tier}"`)) throw new Error(`画质设置缺少 ${tier} 档`);
+}
+if (!css.includes(".boss-bar") || !css.includes(".quality-setting")) throw new Error("首领 HUD 或画质设置缺少样式");
+if (!game.includes("qualityPresets[this.effectiveQuality]") || !game.includes("this.setQualityTier")) throw new Error("画质按钮未接入实际渲染预算");
 
 for (const contract of [
   "this.hud.gateUpgradeCost.innerHTML = this.formatCostMarkup",
@@ -42,4 +51,11 @@ if (!css.includes(".prompt") || !css.includes(".resource-hud") || !css.includes(
   throw new Error("HUD 关键层缺少独立布局轨道");
 }
 
-console.log("界面契约通过：四类资源图标、建造/升级/修理/返还成本与四套多端安全区保持统一。");
+if (!game.includes("refreshBuildZoneVisibility") || !game.includes("autoArrangeBuildings") || !game.includes("beginRelocation")) {
+  throw new Error("功能区域、迁移或一键布防没有接入实际游戏循环");
+}
+if (game.includes("PAD_POSITIONS") || game.includes("distantPanorama")) {
+  throw new Error("旧统一石台或固定全景背景仍残留在运行时代码中");
+}
+
+console.log("界面契约通过：统一资源图标、功能区域、迁移布防、首领 HUD、四档画质与四套多端安全区保持一致。");

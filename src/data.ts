@@ -1,6 +1,7 @@
 import type {
   BuildingDefinition,
   BuildingType,
+  BossDefinition,
   BossKind,
   DirectorContext,
   EnemyDefinition,
@@ -10,7 +11,9 @@ import type {
   HeroClass,
   MetaProgress,
   NightModifier,
+  QualityPreset,
   RegionDefinition,
+  RegionVisualProfile,
   RelicDefinition,
   Resources,
   RngState
@@ -18,7 +21,13 @@ import type {
 
 export const SAVE_KEY = "silk-road-bastion:v7";
 export const PREVIOUS_SAVE_KEY = "silk-road-bastion:v6";
-export const ASSET_VERSION = "sr-assets-2026.08-v1";
+export const ASSET_VERSION = "sr-assets-2026.08-v3-runtime-glb";
+
+export const qualityPresets: Record<"low" | "medium" | "high", QualityPreset> = {
+  low: { tier: "low", pixelRatio: 0.9, shadows: false, shadowMapSize: 512, weatherParticles: 32, sceneryDensity: 0.55, maxVisibleHealthBars: 4 },
+  medium: { tier: "medium", pixelRatio: 1.18, shadows: true, shadowMapSize: 1024, weatherParticles: 72, sceneryDensity: 0.78, maxVisibleHealthBars: 5 },
+  high: { tier: "high", pixelRatio: 1.5, shadows: true, shadowMapSize: 1536, weatherParticles: 132, sceneryDensity: 1, maxVisibleHealthBars: 6 }
+};
 
 export const regions: RegionDefinition[] = [
   {
@@ -75,6 +84,93 @@ export const regions: RegionDefinition[] = [
   }
 ];
 
+/** 区域视觉配置与规则数据分离，避免天气和地标只存在于文案里。 */
+export const regionVisualProfiles: Record<string, RegionVisualProfile> = {
+  oasis: {
+    regionId: "oasis", weather: "dry",
+    weatherColor: 0xd4b879, weatherDensity: 0.42, landmark: "oasis-channel",
+    pathColor: 0xe2c27e, boundaryColor: 0x6d604e, terrainAmplitude: 2.5, horizonColor: 0x7f6f57,
+    groundTexture: "region-oasis", roadStyle: "caravan-earth", waterStyle: "canal",
+    ecologyClusterIds: ["canal-greenbelt", "caravan-stop", "foothill-rocks", "oasis-resource-pocket"],
+    buildingPalette: [0xa68a62, 0x5a3928, 0x3f7470, 0x9c6d42], landmarkPosition: { x: -34, z: -50 },
+    surfaceLayers: [
+      { id: "packed", color: 0xa98455, roughness: 0.94, maxSlope: 0.4 },
+      { id: "rock", color: 0x6f604d, roughness: 1, minSlope: 0.32 },
+      { id: "sand", color: 0xc3a36a, roughness: 0.98 },
+      { id: "wet", color: 0x536b5a, roughness: 0.72, maxHeight: 0.2 },
+      { id: "vegetation", color: 0x68744d, roughness: 0.94 }
+    ]
+  },
+  canyon: {
+    regionId: "canyon", weather: "wind",
+    weatherColor: 0xc8875d, weatherDensity: 0.72, landmark: "quarry-terraces",
+    pathColor: 0xd1a06e, boundaryColor: 0x62382f, terrainAmplitude: 4.8, horizonColor: 0x764535,
+    groundTexture: "region-canyon", roadStyle: "quarry-haul", waterStyle: "none",
+    ecologyClusterIds: ["quarry-workface", "quarry-resource-pocket"],
+    buildingPalette: [0x8d4e3a, 0x4a3025, 0x59615d, 0x6f3b2e], landmarkPosition: { x: -38, z: -53 },
+    surfaceLayers: [
+      { id: "packed", color: 0x9d6248, roughness: 0.96 },
+      { id: "rock", color: 0x713b31, roughness: 1, minSlope: 0.24 },
+      { id: "sand", color: 0xb97854, roughness: 0.98 },
+      { id: "wet", color: 0x655147, roughness: 0.86 },
+      { id: "vegetation", color: 0x6d6542, roughness: 0.96 }
+    ]
+  },
+  mist: {
+    regionId: "mist", weather: "mist",
+    weatherColor: 0xb7c8c2, weatherDensity: 0.9, landmark: "harbor-beacon",
+    pathColor: 0xa7bab0, boundaryColor: 0x465e5b, terrainAmplitude: 1.9, horizonColor: 0x48615f,
+    groundTexture: "region-mist", roadStyle: "raised-causeway", waterStyle: "marsh",
+    ecologyClusterIds: ["harbor-causeway", "mist-resource-pocket"],
+    buildingPalette: [0x5d706b, 0x384541, 0x456e70, 0x557069], landmarkPosition: { x: -35, z: -52 },
+    surfaceLayers: [
+      { id: "packed", color: 0x657a71, roughness: 0.88 },
+      { id: "rock", color: 0x465b57, roughness: 0.98, minSlope: 0.28 },
+      { id: "sand", color: 0x78877b, roughness: 0.93 },
+      { id: "wet", color: 0x354f4d, roughness: 0.52, maxHeight: 0.35 },
+      { id: "vegetation", color: 0x4f6a59, roughness: 0.92 }
+    ]
+  },
+  stardust: {
+    regionId: "stardust", weather: "starlight",
+    weatherColor: 0x9fc4ca, weatherDensity: 0.56, landmark: "astral-ring",
+    pathColor: 0xb7a5c4, boundaryColor: 0x514b5f, terrainAmplitude: 3.4, horizonColor: 0x4c4d62,
+    groundTexture: "region-stardust", roadStyle: "observatory-axis", waterStyle: "mineral-sheen",
+    ecologyClusterIds: ["astral-observatory", "stardust-resource-pocket"],
+    buildingPalette: [0x77727b, 0x3c4149, 0x3c6f72, 0x74634f], landmarkPosition: { x: -33, z: -51 },
+    surfaceLayers: [
+      { id: "packed", color: 0x756d67, roughness: 0.9 },
+      { id: "rock", color: 0x4f4b5b, roughness: 0.97, minSlope: 0.26 },
+      { id: "sand", color: 0x98879e, roughness: 0.94 },
+      { id: "wet", color: 0x4f5964, roughness: 0.7 },
+      { id: "vegetation", color: 0x5e6555, roughness: 0.94 }
+    ]
+  }
+};
+
+export const bossDefinitions: Record<BossKind, BossDefinition> = {
+  "shield-commander": {
+    kind: "shield-commander", name: "盾卫统领", enemyType: "shield", silhouette: "tower-shield",
+    phaseThresholds: [0.66, 0.32], skillCooldown: [8.5, 7, 5.5], rewardCoin: 24, rewardGear: 6,
+    preferredTargets: ["ballista", "fire", "trebuchet"]
+  },
+  "sapper-captain": {
+    kind: "sapper-captain", name: "爆破队长", enemyType: "sapper", silhouette: "powder-rig",
+    phaseThresholds: [0.68, 0.34], skillCooldown: [8, 6.5, 5], rewardCoin: 22, rewardGear: 8,
+    preferredTargets: ["ballista", "workshop", "fire"]
+  },
+  "kite-swarm": {
+    kind: "kite-swarm", name: "机械鸢群", enemyType: "flyer", silhouette: "kite-array",
+    phaseThresholds: [0.62, 0.3], skillCooldown: [7.5, 6, 4.5], rewardCoin: 20, rewardGear: 10,
+    preferredTargets: ["market", "workshop", "antiair"]
+  },
+  "siege-beast": {
+    kind: "siege-beast", name: "披甲攻城兽", enemyType: "ram", silhouette: "armored-beast",
+    phaseThresholds: [0.7, 0.36], skillCooldown: [9, 7.5, 6], rewardCoin: 28, rewardGear: 5,
+    preferredTargets: []
+  }
+};
+
 export const buildings: Record<BuildingType, BuildingDefinition> = {
   ballista: {
     type: "ballista",
@@ -128,8 +224,8 @@ export const buildings: Record<BuildingType, BuildingDefinition> = {
     type: "market",
     name: "丝路商栈",
     icon: "ph-storefront",
-    role: "每 3 秒产币",
-    purpose: "每 3 秒自动生产钱币，受损停产，升级后产量递增",
+    role: "贸易与材料周转",
+    purpose: "每 3 秒产生钱币，并在保留建造储备后自动采购轮换材料；三级可专精现金或军需",
     cost: { coin: 8, wood: 7 },
     maxHp: 145
   },
@@ -250,6 +346,16 @@ export const nightModifiers: NightModifier[] = [
   { id: "harvest", name: "商路丰收", icon: "ph-wheat", enemySpeed: 1.05, enemyDamage: 1.05, loot: 1.2, production: 1.3, description: "生产 +30%，敌军 +5% 速度与伤害" }
 ];
 
+/**
+ * 夜间规则必须与该关真正会出现的机制一致。新手夜不会生成飞行或远程增援，
+ * 因此也不能提前显示对应警报，让玩家误以为床弩漏掉了敌人。
+ */
+export const nightModifiersForEpoch = (epoch: number): NightModifier[] => nightModifiers.filter((modifier) => {
+  if (modifier.id === "flying-raid") return epoch >= 4;
+  if (modifier.id === "looter-call" || modifier.id === "elite-guard") return epoch >= 3;
+  return true;
+});
+
 export class SeedStreams {
   constructor(public state: RngState) {}
 
@@ -348,7 +454,7 @@ export function createGame(mode: GameMode, seedInput: string, meta: MetaProgress
     productionTimer: 3,
     workshopRotation: 0,
     nightSpeed: 1,
-    nightModifier: streams.pick("event", nightModifiers),
+    nightModifier: streams.pick("event", nightModifiersForEpoch(1)),
     fieldObjective: null,
     scoutIntel: 0,
     reinforcementNights: 0,
@@ -363,6 +469,7 @@ export function createGame(mode: GameMode, seedInput: string, meta: MetaProgress
     rarePity: 0,
     qualityTier: "auto",
     assetVersion: ASSET_VERSION,
+    weatherPhase: streams.next("region") * Math.PI * 2,
     fortifications: [-1, 0, 1].map((lane, index) => ({ id: `fort-${index}`, lane, level: 1, hp: 160, maxHp: 160, built: false })),
     adventure: mode === "training" ? {
       hero,
