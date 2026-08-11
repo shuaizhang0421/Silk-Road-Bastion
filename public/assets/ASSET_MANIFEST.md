@@ -84,7 +84,7 @@
 ## 原创标题概念参考
 
 - 生成日期：2026-07-29
-- 原始参考文件：`../../design-references/art-source/title-fortress-original.png`（不随发布包上传）
+- 本地设计源：同级非仓库目录 `Silk-Road-Bastion-Source/art-source/title-fortress-original.png`（不随发布包上传）
 - 用途：动态 3D 首页的构图、光色与材质参考，不作为运行时背景图
 - 生成方式：OpenAI 图像生成工具，项目专用原创提示词
 - 内容约束：无文字、无商标、无现有游戏角色、无既有地图复刻
@@ -102,7 +102,7 @@
 ## 原创生成 v5 驿站封面环境
 
 - 生成日期：2026-08-01
-- 原始参考文件：`../../design-references/art-source/title-fortress-v5.png`（不随发布包上传）
+- 本地设计源：同级非仓库目录 `Silk-Road-Bastion-Source/art-source/title-fortress-v5.png`（不随发布包上传）
 - 用途：v5 首页与游戏内实时 3D 场景的美术参考，不作为运行时背景图
 - 生成方式：OpenAI 图像生成工具，项目专用原创提示词
 - 内容约束：无文字、无商标、无现有游戏角色、无既有地图复刻
@@ -112,7 +112,7 @@
 
 - 生成日期：2026-07-29
 - 发布使用文件：`art/oasis-road-ground-v1-2048.jpg`
-- 原始无损文件：`../../design-references/art-source/oasis-road-ground-v1-2048.png`（不随发布包上传）
+- 本地设计源：同级非仓库目录 `Silk-Road-Bastion-Source/art-source/oasis-road-ground-v1-2048.png`（不随发布包上传）
 - 用途：绿洲商路的可平铺地面与驿站外道路材质
 - 生成方式：OpenAI 图像生成工具，项目专用原创提示词
 - 内容约束：无文字、无商标、无既有游戏角色、无现有地图复刻
@@ -134,7 +134,7 @@
 - 用途：连接基地、近郊探索区和远景地平线；远景不参与碰撞与寻路，运行时不再加载固定全景背景图
 - 原始构成：四区域地表贴图只提供微观砂石/湿土/岩层纹理，地形轮廓、坡度、道路、水域、地标和生态布局均由项目代码原创生成
 - 内容约束：不复刻任何现有游戏地图、地标、角色或视觉识别；世界编号只组合项目自有规则和已登记本地资产
-- 旧参考图：早期全景效果图已移至 `design-references/deprecated-panorama/`，不进入 `public/`、构建产物或运行时请求
+- 旧参考图：早期固定全景图已在 v0.8 清理，不进入 `public/`、构建产物或运行时请求
 
 ## 四区域独立运行包
 
@@ -149,7 +149,7 @@
 
 - 生成日期：2026-08-01
 - 发布使用文件：`art/silk-road-sandstone-v1.jpg`
-- 原始无损文件：`../../design-references/art-source/silk-road-sandstone-v1.png`（不随发布包上传）
+- 本地设计源：同级非仓库目录 `Silk-Road-Bastion-Source/art-source/silk-road-sandstone-v1.png`（不随发布包上传）
 - 用途：围墙、门楼、塔楼与石制建筑基座的可重复材质
 - 生成方式：OpenAI 图像生成工具，项目专用原创提示词
 - 内容约束：无文字、无商标、无现有游戏、影视或现实地标的可识别复制
@@ -159,7 +159,7 @@
 
 - 生成日期：2026-08-01
 - 发布使用文件：`art/silk-road-timber-v1.jpg`
-- 原始无损文件：`../../design-references/art-source/silk-road-timber-v1.png`（不随发布包上传）
+- 本地设计源：同级非仓库目录 `Silk-Road-Bastion-Source/art-source/silk-road-timber-v1.png`（不随发布包上传）
 - 用途：双开城门、商栈、工坊、核心帐篷木构与攻城器械的可重复材质
 - 生成方式：OpenAI 图像生成工具，项目专用原创提示词
 - 内容约束：无文字、无商标、无现有游戏、影视或现实地标的可识别复制
@@ -169,7 +169,7 @@
 
 - 生成日期：2026-08-01
 - 发布使用文件：`art/silk-road-courtyard-paving-v1.jpg`
-- 原始无损文件：`../../design-references/art-source/silk-road-courtyard-paving-v1.png`（不随发布包上传）
+- 本地设计源：同级非仓库目录 `Silk-Road-Bastion-Source/art-source/silk-road-courtyard-paving-v1.png`（不随发布包上传）
 - 用途：驿站院内连续砂岩地表；在所有区域中保持可辨认的基地边界和历史质感
 - 生成方式：OpenAI 图像生成工具，项目专用原创提示词
 - 内容约束：无文字、无商标、无可识别现有游戏或影视资产；正交、无物件、无光照烘焙的可平铺材质
