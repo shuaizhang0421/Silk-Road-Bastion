@@ -2,6 +2,11 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests/e2e",
+  // Keep one reviewed visual baseline for every operating system. Playwright's
+  // default path appends the runner platform, which made Linux CI look for a
+  // second, uncommitted set of screenshots even though the same Chromium scene
+  // had already passed the canonical macOS review set.
+  snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}-{projectName}-darwin{ext}",
   timeout: 45_000,
   // WebGL edge anti-aliasing differs slightly across macOS GPU contexts and CI
   // software rendering. World-space geometry assertions catch structural regressions;
