@@ -2105,7 +2105,8 @@ export class SilkRoadGame {
     const layout = this.currentFortLayout();
     layout.zones.forEach((zone, index) => {
       const isFreshExpansion = this.isFreshExpansionPad(index);
-      const size = zone.type === "siege" ? 5.8 : 4.7;
+      const coarsePointer = window.matchMedia?.("(pointer: coarse)").matches ?? false;
+      const size = (zone.type === "siege" ? 5.8 : 4.7) + (coarsePointer ? 1.25 : 0);
       // The transparent hit surface is always raycastable, while the visible foundation
       // only appears during build/relocation. The courtyard therefore reads as a real place,
       // not a board covered in permanent game tokens.
@@ -2117,6 +2118,10 @@ export class SilkRoadGame {
       pad.rotation.y = zone.rotation;
       pad.userData.padIndex = index;
       pad.userData.zoneType = zone.type;
+      // Invisible gameplay sockets must win the raycast over the courtyard and
+      // character meshes. Building is a mode, so intercepting the click here is
+      // intentional and prevents the player from walking away instead of building.
+      pad.renderOrder = 40;
       if (zone.elevation > 0.35) {
         // Raised defence sockets are wall terraces, not isolated polygonal mounds.
         // A rectangular sandstone plinth aligns with the fort architecture and
@@ -2126,24 +2131,28 @@ export class SilkRoadGame {
           map: this.library.worldTexture("stone") ?? null,
           roughness: 0.95
         });
+        const isFrontDefense = zone.type === "defense" && zone.position.z < -4;
+        const supportDepth = isFrontDefense ? 7.1 : zone.type === "siege" ? 4.85 : 3.9;
         const support = new THREE.Mesh(
-          new THREE.BoxGeometry(size * 1.06, zone.elevation + 0.22, zone.type === "siege" ? 4.85 : 3.9),
+          new THREE.BoxGeometry(size * 1.06, zone.elevation + 0.22, supportDepth),
           supportMaterial
         );
         support.position.copy(this.zonePosition(index));
+        if (isFrontDefense) support.position.z -= 1.55;
         support.position.y = (zone.elevation + 0.22) * 0.5 - 0.06;
-        support.rotation.y = zone.rotation;
+        support.rotation.y = isFrontDefense ? 0 : zone.rotation;
         support.receiveShadow = true;
         support.castShadow = true;
         support.userData.ground = true;
         this.world.add(support);
         const terraceTrim = new THREE.Mesh(
-          new THREE.BoxGeometry(size * 1.12, 0.15, zone.type === "siege" ? 4.98 : 4.03),
+          new THREE.BoxGeometry(size * 1.12, 0.15, supportDepth + 0.13),
           new THREE.MeshStandardMaterial({ color: 0x7c654c, roughness: 0.9 })
         );
         terraceTrim.position.copy(this.zonePosition(index));
+        if (isFrontDefense) terraceTrim.position.z -= 1.55;
         terraceTrim.position.y = zone.elevation + 0.1;
-        terraceTrim.rotation.y = zone.rotation;
+        terraceTrim.rotation.y = isFrontDefense ? 0 : zone.rotation;
         terraceTrim.receiveShadow = true;
         terraceTrim.userData.ground = true;
         this.world.add(terraceTrim);
@@ -2167,16 +2176,12 @@ export class SilkRoadGame {
       );
       foundation.position.y = 0.11;
       marker.add(foundation);
-      const trimMaterial = new THREE.MeshStandardMaterial({ color: 0xa68b5d, roughness: 0.5, metalness: 0.45, transparent: true, opacity: 0.78 });
-      const halfX = size * 0.42;
-      const halfZ = zone.type === "siege" ? 2.02 : 1.55;
-      for (const [x, z] of [[-halfX, -halfZ], [halfX, -halfZ], [-halfX, halfZ], [halfX, halfZ]] as const) {
-        const anchor = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 0.16, 8), trimMaterial);
-        anchor.position.set(x, 0.22, z);
-        marker.add(anchor);
-      }
-      // Do not add floating rails or skids. The low foundation and four grounded
-      // anchors are sufficient once a compatible building is selected.
+      // A single low, coherent foundation is the complete visual language for a
+      // build socket. Separate pegs used to remain visible as unexplained black dots
+      // whenever the slab blended into the paving.
+      marker.traverse((child) => {
+        if (child instanceof THREE.Mesh) child.raycast = () => undefined;
+      });
       marker.visible = isTutorialTarget || isFreshExpansion;
       pad.add(marker);
       pad.userData.zoneMarker = marker;
@@ -3310,6 +3315,20 @@ function makeWindWornMound(
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
     const hits = this.raycaster.intersectObjects(this.world.children, true);
+    if (this.selectedBuild || this.relocation) {
+      const layout = this.currentFortLayout();
+      const movingBuilding = this.relocation
+        ? this.state?.buildings.find((entry) => entry.id === this.relocation!.buildingId)
+        : undefined;
+      const activeType = movingBuilding?.type ?? this.selectedBuild;
+      const padHit = hits.find((hit) => {
+        const index = this.findUserData(hit.object, "padIndex");
+        if (typeof index !== "number" || !activeType) return false;
+        const zone = layout.zones[index];
+        return Boolean(zone && canBuildInZone(activeType, zone));
+      });
+      if (padHit) return padHit;
+    }
     // 树、岩石、帐篷只是景观，不能吞掉“走到这里”的点击；只返回真正可交互对象或地面。
     return hits.find((hit) => this.isGameplayHit(hit.object));
   }

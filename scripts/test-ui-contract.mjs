@@ -4,6 +4,7 @@ import { join } from "node:path";
 const root = process.cwd();
 const html = readFileSync(join(root, "index.html"), "utf8");
 const game = readFileSync(join(root, "src/game.ts"), "utf8");
+const models = readFileSync(join(root, "src/models.ts"), "utf8");
 const css = readFileSync(join(root, "src/style.css"), "utf8");
 
 const resources = ["coin", "wood", "stone", "gear"];
@@ -59,6 +60,17 @@ if (!game.includes("setChoiceUi(true)") || !game.includes("is-choice-hidden") ||
 }
 if (game.includes("PAD_POSITIONS") || game.includes("distantPanorama")) {
   throw new Error("旧统一石台或固定全景背景仍残留在运行时代码中");
+}
+
+// A build socket is an interaction surface, not permanent scenery. Four tiny
+// cylinder pegs used to remain visible after the translucent slab blended into
+// the paving, producing unexplained black dots in the courtyard.
+if (game.includes("new THREE.CylinderGeometry(0.1, 0.14, 0.16, 8)")) {
+  throw new Error("院落建造位仍包含会残留为黑点的固定钉");
+}
+const wallFactory = models.slice(models.indexOf("export function makeFortWallSegment"), models.indexOf("export function makeMarket"));
+if (wallFactory.includes('fittedModel("village-balcony"')) {
+  throw new Error("连续城墙仍会自动生成悬浮木廊");
 }
 
 console.log("界面契约通过：统一资源图标、功能区域、迁移布防、首领 HUD、四档画质与四套多端安全区保持一致。");
