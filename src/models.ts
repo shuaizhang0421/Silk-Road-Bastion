@@ -172,6 +172,8 @@ export interface CharacterRig {
   run: THREE.AnimationAction | null;
   setMoving: (moving: boolean) => void;
   attack: () => void;
+  hit: () => void;
+  defeat: () => void;
 }
 
 export class AssetLibrary {
@@ -239,6 +241,9 @@ export class AssetLibrary {
     const villageRuntimeRoot = window.matchMedia?.("(pointer: coarse)").matches
       ? `${RUNTIME_VILLAGE_ROOT}/mobile`
       : `${RUNTIME_VILLAGE_ROOT}/desktop`;
+    const authoredRuntimeRoot = window.matchMedia?.("(pointer: coarse)").matches
+      ? "./assets/models/authored/mobile"
+      : "./assets/models/authored/desktop";
     const villageJobs = Object.entries(villageModels).map(async ([alias, file]) => {
       const result = await this.gltf.loadAsync(`${villageRuntimeRoot}/${file}.glb`);
       result.scene.traverse((child) => {
@@ -250,6 +255,14 @@ export class AssetLibrary {
     });
 
     const heroJob = this.gltf.loadAsync("./assets/models/quaternius/character-animated.glb");
+    const authoredBallistaJob = this.gltf.loadAsync(`${authoredRuntimeRoot}/silk-road-ballista.glb`).then((result) => {
+      result.scene.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        child.castShadow = true;
+        child.receiveShadow = true;
+      });
+      this.models.set("silk-road-ballista", result.scene);
+    });
     const stoneSurfaceJob = this.textureLoader.loadAsync("./assets/art/silk-road-sandstone-v1.jpg");
     const woodSurfaceJob = this.textureLoader.loadAsync("./assets/art/silk-road-timber-v1.jpg");
     const courtyardPavingJob = this.textureLoader.loadAsync("./assets/art/silk-road-courtyard-paving-v1.jpg");
@@ -283,7 +296,8 @@ export class AssetLibrary {
       caravanRoadJob,
       oasisGroundJob,
       ...glbJobs,
-      ...villageJobs
+      ...villageJobs,
+      authoredBallistaJob
     ]);
 
     for (const texture of [ranger, raider, brute]) {
@@ -574,10 +588,38 @@ export class AssetLibrary {
       const mixer = new THREE.AnimationMixer(hero);
       const idleClip = THREE.AnimationClip.findByName(this.heroAnimations, "Idle");
       const runClip = THREE.AnimationClip.findByName(this.heroAnimations, "Run");
+      const attackClip = THREE.AnimationClip.findByName(this.heroAnimations, kind === "brute" ? "Punch" : "Dagger_Attack");
+      const hitClip = THREE.AnimationClip.findByName(this.heroAnimations, "RecieveHit");
+      const defeatClip = THREE.AnimationClip.findByName(this.heroAnimations, "Death");
       const idle = idleClip ? mixer.clipAction(idleClip) : null;
       const run = runClip ? mixer.clipAction(runClip) : null;
+      const attackAction = attackClip ? mixer.clipAction(attackClip) : null;
+      const hitAction = hitClip ? mixer.clipAction(hitClip) : null;
+      const defeatAction = defeatClip ? mixer.clipAction(defeatClip) : null;
       idle?.play();
       let moving = false;
+      let oneShot: THREE.AnimationAction | null = null;
+      const locomotion = () => moving ? run : idle;
+      const playOneShot = (action: THREE.AnimationAction | null, lock = false) => {
+        if (!action || (lock && container.userData.defeated)) return;
+        oneShot?.stop();
+        locomotion()?.fadeOut(0.08);
+        action.reset();
+        action.setLoop(THREE.LoopOnce, 1);
+        action.clampWhenFinished = true;
+        action.fadeIn(0.06).play();
+        oneShot = action;
+        if (lock) container.userData.defeated = true;
+        const onFinished = (event: { action: THREE.AnimationAction }) => {
+          if (event.action !== action) return;
+          mixer.removeEventListener("finished", onFinished);
+          if (!lock) {
+            oneShot = null;
+            locomotion()?.reset().fadeIn(0.12).play();
+          }
+        };
+        mixer.addEventListener("finished", onFinished);
+      };
       return {
         root: container,
         mixer,
@@ -587,6 +629,7 @@ export class AssetLibrary {
           if (next === moving) return;
           moving = next;
           container.userData.moving = next;
+          if (oneShot || container.userData.defeated) return;
           const from = next ? idle : run;
           const to = next ? run : idle;
           from?.fadeOut(0.18);
@@ -594,7 +637,10 @@ export class AssetLibrary {
         },
         attack() {
           container.userData.attackUntil = performance.now() + 310;
-        }
+          playOneShot(attackAction);
+        },
+        hit() { playOneShot(hitAction); },
+        defeat() { playOneShot(defeatAction, true); }
       };
     }
     const body = skeletonClone(this.characterBase) as THREE.Group;
@@ -649,7 +695,9 @@ export class AssetLibrary {
       },
       attack() {
         container.userData.attackUntil = performance.now() + 360;
-      }
+      },
+      hit() { container.userData.hitUntil = performance.now() + 240; },
+      defeat() { container.userData.defeated = true; }
     };
   }
 }
@@ -935,12 +983,44 @@ export function makeWorkshop(region: RegionDefinition, library: AssetLibrary): T
     entrance.name = "entrance";
     entrance.add(mesh(new THREE.BoxGeometry(2.65, 0.24, 0.48), 0x5b3d2b, [0, 2.55, 1.7], [0, 0, 0], "wood"));
     group.add(entrance);
-    const workshopRoof = new THREE.Mesh(new THREE.ConeGeometry(3.75, 1.34, 4), material(roof, 0.78, 0.05));
-    workshopRoof.scale.z = 0.72;
-    workshopRoof.rotation.y = Math.PI / 4;
-    workshopRoof.position.y = 3.62;
+    // Build the roof from two structural, equal-size slopes.  The earlier single
+    // indexed shell produced a large triangular silhouette from the isometric
+    // camera (and made one side look twisted).  Separate thick slopes keep both
+    // eaves parallel, give the roof a readable edge and remain symmetric at every
+    // camera angle without object-level stretching.
+    const workshopRoof = new THREE.Group();
     workshopRoof.name = "roof";
-    workshopRoof.castShadow = true;
+    const roofHalfDepth = 2.42;
+    const eaveY = 3.3;
+    const ridgeY = 4.15;
+    const rise = ridgeY - eaveY;
+    const slopeLength = Math.hypot(roofHalfDepth, rise);
+    const slopeAngle = Math.atan2(rise, roofHalfDepth);
+    const roofMaterial = material(roof, 0.82, 0.04);
+    for (const side of [-1, 1]) {
+      const slope = new THREE.Mesh(new THREE.BoxGeometry(5.72, 0.18, slopeLength), roofMaterial);
+      slope.name = side < 0 ? "gable-slope-rear" : "gable-slope-front";
+      slope.position.set(0, (eaveY + ridgeY) * 0.5, side * roofHalfDepth * 0.5);
+      slope.rotation.x = side * slopeAngle;
+      slope.castShadow = true;
+      slope.receiveShadow = true;
+      workshopRoof.add(slope);
+    }
+    const ridge = new THREE.Mesh(new THREE.BoxGeometry(5.86, 0.24, 0.3), material(0x293f42, 0.84, 0.04));
+    ridge.name = "gable-ridge";
+    ridge.position.set(0, ridgeY + 0.02, 0);
+    ridge.castShadow = true;
+    workshopRoof.add(ridge);
+    // Timber fascia gives the open workshop a believable front/back roof edge
+    // and makes the two slopes read as one continuous building rather than two
+    // floating boards.
+    for (const side of [-1, 1]) {
+      const fascia = new THREE.Mesh(new THREE.BoxGeometry(5.78, 0.24, 0.16), material(0x4d3527, 0.9, 0.02));
+      fascia.name = side < 0 ? "gable-fascia-rear" : "gable-fascia-front";
+      fascia.position.set(0, eaveY - 0.02, side * (roofHalfDepth + 0.03));
+      fascia.castShadow = true;
+      workshopRoof.add(fascia);
+    }
     group.add(workshopRoof);
     const bench = mesh(new THREE.BoxGeometry(2.9, 0.22, 0.88), 0x654630, [0, 1.0, 1.25], [0, 0, 0], "wood");
     group.add(bench);
@@ -1345,9 +1425,10 @@ export function makeCore(accent: number, regionId = "oasis", library?: AssetLibr
 export function makeBuildModel(type: BuildingType, library: AssetLibrary, region: RegionDefinition): THREE.Group {
   const wrapper = new THREE.Group();
   if (type === "ballista" || type === "antiair") {
-    const model = library.model("siege-ballista", region.accent);
-    model.scale.setScalar(type === "antiair" ? 1.78 : 2.05);
-    model.rotation.y = Math.PI;
+    const authored = library.hasModel("silk-road-ballista");
+    const model = library.model(authored ? "silk-road-ballista" : "siege-ballista", region.accent);
+    model.scale.setScalar(authored ? (type === "antiair" ? 1.05 : 1.18) : (type === "antiair" ? 1.78 : 2.05));
+    model.rotation.y = authored ? 0 : Math.PI;
     wrapper.add(model);
     if (type === "antiair") {
       const tripod = mesh(new THREE.CylinderGeometry(0.65, 1.1, 0.55, 8), 0x5b554d, [0, 0.28, 0]);

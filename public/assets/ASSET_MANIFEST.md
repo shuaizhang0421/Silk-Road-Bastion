@@ -68,6 +68,14 @@
 
 ## 项目原创资产
 
+### 丝路床弩（Blender 实体资产）
+
+- 作者：Silk Road Bastion project
+- 许可证：Project Original
+- 源文件：本地非部署目录 `Silk-Road-Bastion-Source/blender/generate_ballista.py`
+- 项目路径：`models/authored/desktop/silk-road-ballista.glb`、`models/authored/mobile/silk-road-ballista.glb`
+- 制作说明：原创四点砂岩锚座、木制叉架、旋转轴、分体弩臂和弩矢；删除旧模型的整块矩形平台，分别导出桌面和移动 LOD。
+
 - 商栈、机巧工坊、火油塔、拒马、双开城门、门楼、驿站核心、遗物台和区域沙盘由项目代码实时组合生成。
 - 背景音乐、风声和所有音效由项目内 Web Audio API 实时合成，不包含第三方录音或受版权保护曲目。
 - 音乐旋律采用项目原创短音列，白天、夜袭和选择阶段会动态切换节奏与配器。

@@ -30,8 +30,11 @@ function zone(
  * but padIndex continues to identify the same unlocked progression slot.
  */
 const EXPEDITION_ZONES: BuildZoneDefinition[] = [
-  zone("gatehouse-west", "defense", -7.6, -7.1, 0, DEFENSE, [-1, 0], 0.08, 0.55),
-  zone("gatehouse-east", "defense", 7.6, -7.1, 0, DEFENSE, [0, 1], -0.08, 0.55),
+  // Initial gatehouse sockets sit flush with the paved courtyard. Their previous
+  // elevation produced two permanent rectangular terraces even when empty.
+  // Raised plinths are reserved for later, visibly integrated side ramparts.
+  zone("gatehouse-west", "defense", -7.6, -7.1, 0, DEFENSE, [-1, 0], 0.08, 0.08),
+  zone("gatehouse-east", "defense", 7.6, -7.1, 0, DEFENSE, [0, 1], -0.08, 0.08),
   zone("main-yard-west", "courtyard", -12.2, 1.1, 0, COURTYARD, [-1, 0], 0.06),
   zone("main-yard-east", "courtyard", 12.2, 1.1, 0, COURTYARD, [0, 1], -0.06),
   zone("stores-west", "logistics", -8.4, 12.2, 0, LOGISTICS, [], 0),

@@ -165,6 +165,7 @@ interface EnemyVisual {
   object: THREE.Group;
   rig?: CharacterRig;
   flash: number;
+  lastHitReaction: number;
   stolen: boolean;
   label: HTMLButtonElement;
 }
@@ -186,7 +187,9 @@ interface BurstParticle {
 interface FallenVisual {
   object: THREE.Object3D;
   life: number;
+  duration: number;
   direction: number;
+  mixer?: THREE.AnimationMixer;
 }
 
 interface TitleActor {
@@ -2170,15 +2173,21 @@ export class SilkRoadGame {
       });
       const marker = new THREE.Group();
       marker.name = "build-zone-marker";
-      const foundation = new THREE.Mesh(
-        new THREE.BoxGeometry(size - 0.32, 0.08, zone.type === "siege" ? 4.78 : 3.82),
-        zoneMaterial
-      );
-      foundation.position.y = 0.11;
-      marker.add(foundation);
-      // A single low, coherent foundation is the complete visual language for a
-      // build socket. Separate pegs used to remain visible as unexplained black dots
-      // whenever the slab blended into the paving.
+      // Build mode uses a hollow four-corner outline, never a filled slab. This keeps
+      // legal placement obvious without leaving two brown rectangles in the fort.
+      const outlineWidth = size - 0.34;
+      const outlineDepth = zone.type === "siege" ? 4.78 : 3.82;
+      const cornerLength = Math.min(0.92, outlineWidth * 0.24);
+      const lineWidth = 0.09;
+      for (const x of [-1, 1]) {
+        for (const z of [-1, 1]) {
+          const horizontal = new THREE.Mesh(new THREE.BoxGeometry(cornerLength, 0.045, lineWidth), zoneMaterial);
+          horizontal.position.set(x * (outlineWidth * 0.5 - cornerLength * 0.5), 0.105, z * outlineDepth * 0.5);
+          const vertical = new THREE.Mesh(new THREE.BoxGeometry(lineWidth, 0.045, cornerLength), zoneMaterial);
+          vertical.position.set(x * outlineWidth * 0.5, 0.105, z * (outlineDepth * 0.5 - cornerLength * 0.5));
+          marker.add(horizontal, vertical);
+        }
+      }
       marker.traverse((child) => {
         if (child instanceof THREE.Mesh) child.raycast = () => undefined;
       });
@@ -4609,12 +4618,13 @@ function makeWindWornMound(
         for (const target of targets) {
           if (target.visual.object.position.distanceTo(primary.visual.object.position) > 2.55) continue;
           target.enemy.hp -= damage;
+          this.reactToEnemyHit(target.visual, 0.12);
           target.enemy.slowedUntil = performance.now() + 720;
           target.visual.flash = 0.12;
         }
       } else {
         primary.enemy.hp -= damage;
-        primary.visual.flash = 0.15;
+        this.reactToEnemyHit(primary.visual, 0.15);
       }
       const direction = primary.visual.object.position.clone().sub(this.playerRig.root.position).setY(0).normalize();
       this.playerRig.root.rotation.y = Math.atan2(direction.x, direction.z);
@@ -4629,7 +4639,7 @@ function makeWindWornMound(
       if (!visual || visual.object.position.distanceTo(this.playerRig.root.position) > 3.6) continue;
       const playerDamage = 34 * (1 + this.state.relics.filter((entry) => entry === "player-damage").length * 0.2);
       enemy.hp -= this.state.mode === "training" ? (this.state.adventure?.attack ?? 34) : playerDamage;
-      visual.flash = 0.15;
+      this.reactToEnemyHit(visual, 0.15);
       this.burst(visual.object.position.clone().setY(1.2), 0xe2ad55, 6);
       hit = true;
       break;
@@ -5139,7 +5149,7 @@ function makeWindWornMound(
         ally.rig.attack();
         target.enemy.hp -= 16;
         target.enemy.targetedUntil = performance.now() + 650;
-        target.visual.flash = 0.12;
+        this.reactToEnemyHit(target.visual, 0.12);
         this.burst(target.visual.object.position.clone().setY(1.15), 0x73b0a2, 4);
       }
     }
@@ -5259,7 +5269,17 @@ function makeWindWornMound(
     label.innerHTML = `<strong><b>${enemy.elite && !enemy.bossKind ? "精锐 " : ""}${displayName}</b><small>${Math.ceil(enemy.hp)}/${enemy.maxHp}</small></strong><span><i></i></span>`;
     label.addEventListener("click", () => this.selectEnemy(enemy.id));
     this.hud.buildingLabels.appendChild(label);
-    this.enemyObjects.set(enemy.id, { object: root, rig, flash: 0, stolen: false, label });
+    this.enemyObjects.set(enemy.id, { object: root, rig, flash: 0, lastHitReaction: -Infinity, stolen: false, label });
+  }
+
+  /** Prevents high-rate towers from restarting the same skeletal hit clip every frame. */
+  private reactToEnemyHit(visual: EnemyVisual | undefined, flash = 0.1): void {
+    if (!visual) return;
+    visual.flash = Math.max(visual.flash, flash);
+    const now = performance.now();
+    if (now - visual.lastHitReaction < 260) return;
+    visual.lastHitReaction = now;
+    visual.rig?.hit();
   }
 
   private selectEnemy(id: string): void {
@@ -5721,7 +5741,7 @@ function makeWindWornMound(
       }
       const target = this.enemyObjects.get(nearest.id);
       if (target) {
-        target.flash = 0.1;
+        this.reactToEnemyHit(target, 0.1);
         this.fireProjectile(object.position.clone().setY(building.type === "fire" ? 4.5 : 2), target.object.position.clone().setY(1.2), building.type === "fire" ? 0xf0803e : 0xe8c47a);
       }
       if (building.type === "antiair" && specialization === "volley") {
@@ -5734,7 +5754,7 @@ function makeWindWornMound(
         if (secondary && secondaryVisual) {
           secondary.hp -= damage * 0.58;
           secondary.targetedUntil = performance.now() + 500;
-          secondaryVisual.flash = 0.08;
+          this.reactToEnemyHit(secondaryVisual, 0.08);
           this.fireProjectile(object.position.clone().setY(2.3), secondaryVisual.object.position.clone().setY(1.3), 0x9ed3d3);
         }
       }
@@ -5746,7 +5766,7 @@ function makeWindWornMound(
           const blastRange = (specialization === "shatter" ? 4.35 : 3.1) * (1 + blastRelics * 0.12);
           if (!visual || visual.object.position.distanceTo(target.object.position) > blastRange) continue;
           enemy.hp -= damage * 0.48;
-          visual.flash = 0.08;
+          this.reactToEnemyHit(visual, 0.08);
         }
         this.burst(target.object.position.clone().setY(1.2), 0x9f7e5d, 12);
       }
@@ -5788,7 +5808,9 @@ function makeWindWornMound(
         this.burst(visual.object.position.clone().setY(1.2), 0xd6aa62, 10);
         visual.label.remove();
         visual.object.userData.defeated = true;
-        this.fallenVisuals.push({ object: visual.object, life: 0.58, direction: enemy.lane >= 0 ? 1 : -1 });
+        visual.rig?.defeat();
+        const duration = visual.rig ? 0.92 : 0.58;
+        this.fallenVisuals.push({ object: visual.object, mixer: visual.rig?.mixer, life: duration, duration, direction: enemy.lane >= 0 ? 1 : -1 });
       }
       this.enemyObjects.delete(enemy.id);
       const lootMultiplier = this.state.nightModifier?.loot ?? 1;
@@ -6179,9 +6201,14 @@ function makeWindWornMound(
   private updateFallenVisuals(delta: number): void {
     for (const fallen of this.fallenVisuals) {
       fallen.life -= delta;
-      const progress = 1 - Math.max(0, fallen.life) / 0.58;
-      fallen.object.rotation.z = fallen.direction * Math.min(1.25, progress * 1.45);
-      fallen.object.position.y = Math.max(-0.28, fallen.object.position.y - delta * 0.48);
+      fallen.mixer?.update(delta);
+      const progress = 1 - Math.max(0, fallen.life) / fallen.duration;
+      // Skeletal characters use their authored death clip. Only non-rigged siege props
+      // use the old rigid-body fall, so the two systems never fight each other.
+      if (!fallen.mixer) {
+        fallen.object.rotation.z = fallen.direction * Math.min(1.25, progress * 1.45);
+        fallen.object.position.y = Math.max(-0.28, fallen.object.position.y - delta * 0.48);
+      }
       const scale = Number(fallen.object.userData.baseScale ?? 1) * (1 - progress * 0.12);
       fallen.object.scale.setScalar(scale);
     }

@@ -46,6 +46,9 @@ async function boot(): Promise<void> {
     await library.load();
     loadingProgress.style.width = "100%";
     const game = new SilkRoadGame(canvas, library);
+    if (["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+      (window as typeof window & { __silkRoadGame?: unknown }).__silkRoadGame = game;
+    }
     game.showTitle();
     game.animate();
     loading.classList.add("is-hidden");

@@ -16,6 +16,8 @@ const required = [
   "public/assets/models/runtime/desktop/Prop_Crate.glb",
   "public/assets/models/runtime/mobile/Wall_UnevenBrick_Door_Round.glb",
   "public/assets/models/runtime/mobile/Prop_Wagon.glb",
+  "public/assets/models/authored/desktop/silk-road-ballista.glb",
+  "public/assets/models/authored/mobile/silk-road-ballista.glb",
   "public/assets/materials/polyhaven/LICENSE.txt",
   "public/assets/materials/polyhaven/aerial_sand/aerial_sand_diff_1k.jpg",
   "public/assets/materials/polyhaven/aerial_sand/aerial_sand_nor_gl_1k.jpg",

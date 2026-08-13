@@ -63,6 +63,15 @@ export const runtimeAssetManifest: AssetManifestEntry[] = [
     modified: "选用 1K 沙地、旧砂岩、粗木和锈蚀金属 PBR 贴图并统一色调"
   },
   {
+    id: "silk-road-ballista-authored",
+    path: "assets/models/authored/",
+    type: "model",
+    author: "Silk Road Bastion project",
+    license: "Project Original",
+    source: "Project-authored Blender source and export script",
+    modified: "原创四点砂岩锚座、木制叉架、旋转轴、弩臂和弩矢；桌面与移动 LOD 均不含整块矩形底板"
+  },
+  {
     id: "silk-road-procedural-soundscape-v2",
     path: "src/game.ts",
     type: "audio",
@@ -199,19 +208,19 @@ export const regionAssetBundles: Record<string, RegionAssetBundle> = {
 };
 
 export const characterAnimationSets: Record<"player" | EnemyType, AnimationSet> = {
-  player: { idle: "Idle", run: "Run", aim: "Attack", attack: "Attack", hit: "project-hit-reaction", defeat: "project-fall" },
-  raider: { idle: "Idle", run: "Run", attack: "Attack", hit: "project-hit-reaction", defeat: "project-fall" },
-  shield: { idle: "Idle", run: "Run", attack: "Attack", hit: "project-shield-stagger", defeat: "project-fall" },
-  sapper: { idle: "Idle", run: "Run", aim: "project-fuse-windup", attack: "Attack", hit: "project-hit-reaction", defeat: "project-fall" },
-  looter: { idle: "Idle", run: "Run", attack: "Attack", hit: "project-hit-reaction", defeat: "project-fall" },
-  archer: { idle: "Idle", run: "Run", aim: "project-bow-aim", attack: "Attack", hit: "project-hit-reaction", defeat: "project-fall" },
-  flyer: { idle: "project-hover", run: "project-flight", aim: "project-dive-windup", attack: "project-dive", hit: "project-mechanical-wobble", defeat: "project-fall" },
-  ram: { idle: "project-beast-idle", run: "project-heavy-march", aim: "project-charge-windup", attack: "project-ram", hit: "project-armor-stagger", defeat: "project-fall" }
+  player: { source: "skeletal", idle: "Idle", run: "Run", aim: "Attacking_Idle", attack: "Dagger_Attack", hit: "RecieveHit", defeat: "Death" },
+  raider: { source: "skeletal", idle: "Idle", run: "Run", attack: "Dagger_Attack", hit: "RecieveHit", defeat: "Death" },
+  shield: { source: "skeletal", idle: "Idle", run: "Run", aim: "Attacking_Idle", attack: "Punch", hit: "RecieveHit_Attacking", defeat: "Death" },
+  sapper: { source: "skeletal", idle: "Idle", run: "Run", aim: "PickUp", attack: "Dagger_Attack2", hit: "RecieveHit", defeat: "Death" },
+  looter: { source: "skeletal", idle: "Idle", run: "Run", attack: "Dagger_Attack2", hit: "RecieveHit", defeat: "Death" },
+  archer: { source: "skeletal", idle: "Idle", run: "Run", aim: "Attacking_Idle", attack: "Dagger_Attack2", hit: "RecieveHit_Attacking", defeat: "Death" },
+  flyer: { source: "procedural", idle: "rotor-hover", run: "wing-flight", aim: "dive-windup", attack: "dive", hit: "rotor-wobble", defeat: "mechanical-fall" },
+  ram: { source: "procedural", idle: "ram-idle", run: "wheel-march", aim: "charge-windup", attack: "ram-impact", hit: "frame-stagger", defeat: "frame-collapse" }
 };
 
 export const bossAnimationSets: Record<BossKind, AnimationSet> = {
-  "shield-commander": { idle: "Idle", run: "Run", aim: "project-formation", attack: "project-shockwave", hit: "project-shield-stagger", defeat: "project-fall" },
-  "sapper-captain": { idle: "Idle", run: "Run", aim: "project-plant-charge", attack: "project-detonate", hit: "project-hit-reaction", defeat: "project-fall" },
-  "kite-swarm": { idle: "project-hover", run: "project-flight", aim: "project-split", attack: "project-dive", hit: "project-mechanical-wobble", defeat: "project-fall" },
-  "siege-beast": { idle: "project-beast-idle", run: "project-heavy-march", aim: "project-charge-windup", attack: "project-ram", hit: "project-armor-stagger", defeat: "project-fall" }
+  "shield-commander": { source: "skeletal", idle: "Idle", run: "Run", aim: "Attacking_Idle", attack: "Punch", hit: "RecieveHit_Attacking", defeat: "Death" },
+  "sapper-captain": { source: "skeletal", idle: "Idle", run: "Run", aim: "PickUp", attack: "Dagger_Attack2", hit: "RecieveHit", defeat: "Death" },
+  "kite-swarm": { source: "procedural", idle: "rotor-hover", run: "wing-flight", aim: "swarm-split", attack: "swarm-dive", hit: "rotor-wobble", defeat: "mechanical-fall" },
+  "siege-beast": { source: "skeletal", idle: "Idle", run: "Run", aim: "Attacking_Idle", attack: "Punch", hit: "RecieveHit_Attacking", defeat: "Death" }
 };

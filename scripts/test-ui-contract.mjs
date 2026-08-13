@@ -6,6 +6,7 @@ const html = readFileSync(join(root, "index.html"), "utf8");
 const game = readFileSync(join(root, "src/game.ts"), "utf8");
 const models = readFileSync(join(root, "src/models.ts"), "utf8");
 const css = readFileSync(join(root, "src/style.css"), "utf8");
+const fortLayout = readFileSync(join(root, "src/fort-layout.ts"), "utf8");
 
 const resources = ["coin", "wood", "stone", "gear"];
 for (const resource of resources) {
@@ -67,6 +68,13 @@ if (game.includes("PAD_POSITIONS") || game.includes("distantPanorama")) {
 // the paving, producing unexplained black dots in the courtyard.
 if (game.includes("new THREE.CylinderGeometry(0.1, 0.14, 0.16, 8)")) {
   throw new Error("院落建造位仍包含会残留为黑点的固定钉");
+}
+if (game.includes("new THREE.BoxGeometry(size - 0.32, 0.08")) {
+  throw new Error("建造位提示仍使用会被误认为建筑的实心矩形底板");
+}
+if (!fortLayout.includes('zone("gatehouse-west", "defense", -7.6, -7.1, 0, DEFENSE, [-1, 0], 0.08, 0.08)')
+  || !fortLayout.includes('zone("gatehouse-east", "defense", 7.6, -7.1, 0, DEFENSE, [0, 1], -0.08, 0.08)')) {
+  throw new Error("初始门楼城防位不得再生成常驻高台方块");
 }
 const wallFactory = models.slice(models.indexOf("export function makeFortWallSegment"), models.indexOf("export function makeMarket"));
 if (wallFactory.includes('fittedModel("village-balcony"')) {

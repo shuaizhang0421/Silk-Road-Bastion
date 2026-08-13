@@ -12,9 +12,10 @@
     "test:ui": "node scripts/test-ui-contract.mjs",
     "test:assets": "node scripts/audit-assets.mjs",
     "test:regions": "tsx scripts/test-region-bundles.ts",
-    "test:onboarding": "tsx scripts/test-onboarding-flow.ts"
-    ,"test:geometry": "tsx scripts/test-geometry-contract.ts"
-    ,"test:audio": "node scripts/test-audio-contract.mjs"
+    "test:onboarding": "tsx scripts/test-onboarding-flow.ts",
+    "test:geometry": "tsx scripts/test-geometry-contract.ts",
+    "test:audio": "node scripts/test-audio-contract.mjs",
+    "test:visual-assets": "node scripts/check-visual-assets.mjs"
   },
   "dependencies": {
     "@phosphor-icons/web": "^2.1.2",

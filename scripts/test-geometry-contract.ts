@@ -13,10 +13,11 @@ const mockLibrary = {
     root.add(object);
     return root;
   },
-  model: () => {
+  model: (name: string) => {
     const root = new THREE.Group();
-    const object = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), new THREE.MeshStandardMaterial());
-    object.position.y = 1;
+    const dimensions: [number, number, number] = name === "silk-road-ballista" ? [3.45, 1.85, 2.55] : [2, 2, 2];
+    const object = new THREE.Mesh(new THREE.BoxGeometry(...dimensions), new THREE.MeshStandardMaterial());
+    object.position.y = dimensions[1] * 0.5;
     root.add(object);
     return root;
   }
@@ -36,6 +37,22 @@ for (const [id, object] of Object.entries(fixtures)) {
   const names = new Set<string>();
   object.traverse((child) => { if (child.name) names.add(child.name); });
   for (const required of contract.requiredParts) if (!names.has(required)) throw new Error(`${id}: missing structural part ${required}`);
+  if (id === "workshop") {
+    const roof = object.getObjectByName("roof");
+    if (!(roof instanceof THREE.Group)) throw new Error("workshop: roof must be a structural group");
+    const rearSlope = roof.getObjectByName("gable-slope-rear");
+    const frontSlope = roof.getObjectByName("gable-slope-front");
+    if (!(rearSlope instanceof THREE.Mesh) || !(frontSlope instanceof THREE.Mesh) || !roof.getObjectByName("gable-ridge")) {
+      throw new Error("workshop: roof must have two symmetric slopes and one ridge");
+    }
+    if (Math.abs(rearSlope.rotation.x + frontSlope.rotation.x) > 0.0001 || Math.abs(rearSlope.position.y - frontSlope.position.y) > 0.0001) {
+      throw new Error("workshop: roof slopes are not symmetric");
+    }
+    if (!roof.getObjectByName("gable-fascia-rear") || !roof.getObjectByName("gable-fascia-front")) {
+      throw new Error("workshop: roof must have grounded front and rear fascia");
+    }
+    if (roof.scale.x !== 1 || roof.scale.y !== 1 || roof.scale.z !== 1) throw new Error("workshop: roof cannot use non-uniform object scaling");
+  }
   if (size.x < contract.footprint[0] * 0.82 || size.z < contract.footprint[1] * 0.82) throw new Error(`${id}: footprint collapsed to ${size.toArray().join(" x ")}`);
   if (size.y < contract.heightRange[0] || size.y > contract.heightRange[1]) throw new Error(`${id}: height ${size.y.toFixed(2)} outside contract`);
   if (bounds.min.y < -0.04) throw new Error(`${id}: model sinks below ground (${bounds.min.y.toFixed(2)})`);
@@ -57,7 +74,9 @@ const worldFixtures: Array<{
     id: `build-${type}`,
     object: makeBuildModel(type, mockLibrary, regions[0]!),
     min: (type === "fire" ? [1.7, 3.5, 1.7]
+      : type === "ballista" ? [3.2, 1.8, 2.4]
       : type === "market" || type === "workshop" ? [4.2, 2.7, 3.4]
+      : type === "antiair" ? [2.8, 2.5, 2.6]
       : [2.8, 2.6, 2.8]) as [number, number, number],
     max: (type === "workshop" ? [10, 5.5, 10]
       : type === "trebuchet" ? [6.3, 5.5, 6.3]

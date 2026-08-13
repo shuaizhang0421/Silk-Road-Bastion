@@ -1,13 +1,15 @@
-# 运行资产管线
+# Runtime 3D asset pipeline
 
-仓库只保存浏览器运行所需的压缩资源。Blender、FBX、OBJ、原始 glTF 与高分辨率贴图保存在仓库外的本地设计源目录。
+Only project-authored, CC0, or individually reviewed CC BY sources may enter a `.blend` source file. Source files, raw textures, and references live in the sibling local-only `Silk-Road-Bastion-Source` directory. The deployable repository contains only reviewed GLB/WebP outputs, license copies, and the machine-readable manifest.
 
-当前 Quaternius CC0 建筑模块由 glTF Transform CLI 4.4.2 转换为自包含 GLB：
+## Blender contract
 
-```bash
-gltf-transform optimize source.gltf output.glb --compress meshopt --texture-compress webp
-```
+- Metric units, one Blender unit equals one metre.
+- The ground contact is at `Y=0` after glTF conversion; authored origins sit on the footprint centre unless the geometry contract says otherwise.
+- Runtime collections are named `EXPORT_<asset-id>_LOD0`, `LOD1`, or `LOD2`.
+- Collision helpers are named `COLLIDER_<asset-id>` and are not rendered.
+- Buildings must contain a continuous foundation, body, roof, and entrance.
+- LOD variants preserve world dimensions, origin, skeleton and collision bounds.
+- All required animation names must exist in the GLB; the game may not silently substitute a made-up clip.
 
-导出后必须执行 `pnpm test:assets`。审计会检查许可证、桌面/移动资源数量、Meshopt、WebP、单文件大小、总下载预算以及远程资源请求。
-
-角色与核心建筑的源文件应统一使用米制比例、Y 轴向上、对象原点位于地面中心，并为桌面、通用和移动端保留 LOD0、LOD1、LOD2。任何新增第三方资产必须先登记作者、来源、许可证、修改说明和许可证副本。
+Run the exporter with the repository's `scripts/blender/export-runtime-assets.py`, then run `pnpm test:visual-assets`, `pnpm test:geometry`, `pnpm test:assets`, and a production build before accepting the outputs.

@@ -198,6 +198,8 @@ export interface RegionVisualProfile {
 }
 
 export interface AnimationSet {
+  /** Skeletal sets must resolve to real clips in the registered GLB. */
+  source?: "skeletal" | "procedural";
   idle: string;
   run: string;
   aim?: string;
@@ -236,7 +238,12 @@ export interface VisualAssetDefinition {
   interactionAnchor?: string;
   bundle: "common" | string;
   triangleBudget?: readonly [number, number, number];
-  animations?: string;
+  /** Ordered authored LODs, highest detail first. */
+  lodPaths?: readonly string[];
+  textureSets?: readonly string[];
+  collisionBounds?: readonly [number, number, number];
+  animationSet?: string;
+  stateModels?: Readonly<Partial<Record<"level2" | "level3" | "specialized" | "damaged" | "destroyed", string>>>;
 }
 
 export type ModelFitMode = "contain" | "axis-fit" | "tile-x" | "natural";
@@ -258,6 +265,11 @@ export interface BuildingVisualDefinition {
   heightRange: readonly [number, number];
   requiredParts: readonly ("foundation" | "body" | "roof" | "entrance")[];
   openSides: readonly ("front" | "rear" | "left" | "right")[];
+  assetId?: string;
+  levels?: Readonly<Partial<Record<1 | 2 | 3, string>>>;
+  specializations?: Readonly<Record<string, string>>;
+  damagedAsset?: string;
+  destroyedAsset?: string;
 }
 
 export type MusicState = "explore" | "prepare" | "danger" | "boss" | "choice" | "victory" | "defeat";
