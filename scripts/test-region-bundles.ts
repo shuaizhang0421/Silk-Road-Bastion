@@ -11,6 +11,8 @@ for (const region of regions) {
   if (!profile || !bundle) continue;
   if (bundle.regionId !== region.id) failures.push(`${region.id}: bundle region mismatch`);
   if (!bundle.desktopPaths.length || !bundle.mobilePaths.length) failures.push(`${region.id}: missing desktop/mobile paths`);
+  if (!bundle.desktopPaths.some((path) => path.endsWith(`region-${region.id}-landmark.glb`))) failures.push(`${region.id}: missing desktop landmark GLB`);
+  if (!bundle.mobilePaths.some((path) => path.endsWith(`region-${region.id}-landmark.glb`))) failures.push(`${region.id}: missing mobile landmark GLB`);
   for (const assetPath of new Set([...bundle.desktopPaths, ...bundle.mobilePaths])) if (!assetPath.startsWith("assets/")) failures.push(`${region.id}: invalid local path ${assetPath}`);
   const clusterIds = regionEnvironmentClusters.filter((cluster) => cluster.regionId === region.id).map((cluster) => cluster.id);
   if (clusterIds.length < 2) failures.push(`${region.id}: needs at least two environment clusters`);

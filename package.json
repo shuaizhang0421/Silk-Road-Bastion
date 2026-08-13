@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:sim": "tsx scripts/simulate.ts",
+    "test:difficulty": "tsx scripts/test-difficulty-loop.ts",
     "test:save": "tsx scripts/test-save-migration.ts",
     "test:ui": "node scripts/test-ui-contract.mjs",
     "test:assets": "node scripts/audit-assets.mjs",
@@ -15,13 +16,16 @@
     "test:onboarding": "tsx scripts/test-onboarding-flow.ts",
     "test:geometry": "tsx scripts/test-geometry-contract.ts",
     "test:audio": "node scripts/test-audio-contract.mjs",
-    "test:visual-assets": "node scripts/check-visual-assets.mjs"
+    "test:visual-assets": "node scripts/check-visual-assets.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "@phosphor-icons/web": "^2.1.2",
     "three": "^0.180.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/three": "^0.180.0",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3",

@@ -48,7 +48,11 @@ for (const file of desktop) {
 }
 for (const file of mobile) if (!desktop.includes(file)) throw new Error(`缺少对应桌面模型：${file}`);
 
-const authoredPairs = ["silk-road-ballista.glb"];
+const authoredPairs = [
+  "silk-road-ballista.glb",
+  "unit-player.glb", "unit-raider.glb", "unit-shield.glb", "unit-sapper.glb", "unit-looter.glb", "unit-archer.glb",
+  "unit-shield-commander.glb", "unit-sapper-captain.glb", "unit-flyer.glb", "unit-kite-swarm.glb", "unit-ram.glb", "unit-siege-beast.glb"
+];
 for (const file of authoredPairs) {
   const high = glbJson(join(authoredDesktopDir, file));
   const low = glbJson(join(authoredMobileDir, file));
@@ -56,10 +60,22 @@ for (const file of authoredPairs) {
   const lowTriangles = triangleCount(low);
   if (highTriangles <= 0 || lowTriangles <= 0 || lowTriangles > highTriangles) throw new Error(`原创模型 LOD 预算异常：${file}`);
   const nodeNames = (high.nodes ?? []).map((node) => node.name ?? "");
-  for (const part of ["anchor-0", "carriage-spine", "swivel", "bow-arm-1", "loaded-bolt"]) {
-    if (!nodeNames.includes(part)) throw new Error(`原创床弩缺少结构部件：${part}`);
+  if (file === "silk-road-ballista.glb") {
+    for (const part of ["anchor-0", "carriage-spine", "swivel", "bow-arm-1", "loaded-bolt"]) {
+      if (!nodeNames.includes(part)) throw new Error(`原创床弩缺少结构部件：${part}`);
+    }
+    if (nodeNames.some((name) => /platform|foundation|floor-slab/i.test(name))) throw new Error("原创床弩重新引入了整块矩形底板");
   }
-  if (nodeNames.some((name) => /platform|foundation|floor-slab/i.test(name))) throw new Error("原创床弩重新引入了整块矩形底板");
+  if (/unit-(?:player|raider|shield|sapper|looter|archer|shield-commander|sapper-captain)/.test(file)) {
+    const clips = new Set((high.animations ?? []).map((animation) => animation.name));
+    for (const required of ["Idle", "Run", "RecieveHit", "Death"]) {
+      if (!clips.has(required)) throw new Error(`${file} 缺少必需骨骼动作：${required}`);
+    }
+    if (highTriangles > 25000 || lowTriangles > 12000) throw new Error(`${file} 超出角色 LOD 预算`);
+  }
+  if (file === "unit-flyer.glb" && !nodeNames.some((name) => /wing/i.test(name))) throw new Error("机械鸢缺少可辨认机翼");
+  if (file === "unit-kite-swarm.glb" && !nodeNames.includes("swarm command crown")) throw new Error("机械鸢群缺少首领专属轮廓");
+  if (file === "unit-siege-beast.glb" && !nodeNames.includes("massive quadruped body")) throw new Error("攻城兽仍不是独立四足资产");
 }
 
 const manifest = readFileSync(join(root, "src/asset-manifest.ts"), "utf8");

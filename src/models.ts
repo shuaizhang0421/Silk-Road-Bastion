@@ -4,13 +4,34 @@ import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { MeshoptDecoder } from "three/addons/libs/meshopt_decoder.module.js";
 import { clone as skeletonClone } from "three/addons/utils/SkeletonUtils.js";
 import { regionAssetBundles } from "./asset-manifest";
-import type { BossKind, BuildingType, EnemyType, RegionDefinition } from "./types";
+import type { BossKind, BuildingState, BuildingType, EnemyType, RegionDefinition } from "./types";
 
 const ASSET_ROOT = "./assets/models/kenney";
 const RUNTIME_VILLAGE_ROOT = "./assets/models/runtime";
 
 type CharacterKind = "ranger" | "raider" | "brute";
+export type UnitVisualKind = "player" | "raider" | "shield" | "sapper" | "looter" | "archer" | "shield-commander" | "sapper-captain";
 type MaterialSurface = "stone" | "wood" | "iron" | "sand";
+
+const UNIT_SIGNATURE_PART: Record<UnitVisualKind, string> = {
+  player: "traveller spear",
+  raider: "curved sabre",
+  shield: "tower shield",
+  sapper: "powder charge",
+  looter: "cargo sack 0",
+  archer: "recurve bow",
+  "shield-commander": "command crest",
+  "sapper-captain": "charge rack"
+};
+
+const normalizeAssetNodeName = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+function hasAssetNode(root: THREE.Object3D, expected: string): boolean {
+  const target = normalizeAssetNodeName(expected);
+  let found = false;
+  root.traverse((object) => { if (normalizeAssetNodeName(object.name) === target) found = true; });
+  return found;
+}
 
 interface SurfaceTextureSet {
   color: THREE.Texture;
@@ -185,12 +206,14 @@ export class AssetLibrary {
   private textures = new Map<CharacterKind, THREE.Texture>();
   private worldTextures = new Map<string, THREE.Texture>();
   private loadedRegionId = "oasis";
+  private loadedRegionModels = new Set<string>();
   private regionLoad?: Promise<void>;
   private characterBase?: THREE.Group;
   private idleClip?: THREE.AnimationClip;
   private runClip?: THREE.AnimationClip;
   private heroBase?: THREE.Group;
   private heroAnimations: THREE.AnimationClip[] = [];
+  private unitBases = new Map<UnitVisualKind, { scene: THREE.Group; animations: THREE.AnimationClip[] }>();
 
   constructor(onProgress: (loaded: number, total: number) => void) {
     this.gltf.setMeshoptDecoder(MeshoptDecoder);
@@ -263,6 +286,28 @@ export class AssetLibrary {
       });
       this.models.set("silk-road-ballista", result.scene);
     });
+    const unitKinds: UnitVisualKind[] = ["player", "raider", "shield", "sapper", "looter", "archer", "shield-commander", "sapper-captain"];
+    const unitJobs = unitKinds.map(async (kind) => {
+      const result = await this.gltf.loadAsync(`${authoredRuntimeRoot}/unit-${kind}.glb`);
+      if (!hasAssetNode(result.scene, UNIT_SIGNATURE_PART[kind])) {
+        throw new Error(`unit-${kind}.glb 缺少身份轮廓部件：${UNIT_SIGNATURE_PART[kind]}`);
+      }
+      result.scene.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        child.castShadow = true;
+        child.receiveShadow = true;
+      });
+      this.unitBases.set(kind, { scene: result.scene, animations: result.animations });
+    });
+    const mechanicalJobs = ["flyer", "kite-swarm", "ram", "siege-beast"].map(async (kind) => {
+      const result = await this.gltf.loadAsync(`${authoredRuntimeRoot}/unit-${kind}.glb`);
+      result.scene.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        child.castShadow = true;
+        child.receiveShadow = true;
+      });
+      this.models.set(`unit-${kind}`, result.scene);
+    });
     const stoneSurfaceJob = this.textureLoader.loadAsync("./assets/art/silk-road-sandstone-v1.jpg");
     const woodSurfaceJob = this.textureLoader.loadAsync("./assets/art/silk-road-timber-v1.jpg");
     const courtyardPavingJob = this.textureLoader.loadAsync("./assets/art/silk-road-courtyard-paving-v1.jpg");
@@ -297,7 +342,9 @@ export class AssetLibrary {
       oasisGroundJob,
       ...glbJobs,
       ...villageJobs,
-      authoredBallistaJob
+      authoredBallistaJob,
+      ...unitJobs,
+      ...mechanicalJobs
     ]);
 
     for (const texture of [ranger, raider, brute]) {
@@ -361,13 +408,37 @@ export class AssetLibrary {
     texture.anisotropy = window.matchMedia?.("(pointer: coarse)").matches ? 2 : 4;
   }
 
-  /** Load one regional visual pack and release the previous regional ground texture. */
+  private disposeModel(name: string): void {
+    const source = this.models.get(name);
+    if (!source) return;
+    const disposedTextures = new Set<THREE.Texture>();
+    source.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.geometry.dispose();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const material of materials) {
+        // Region GLBs own embedded texture maps. Disposing only the material
+        // leaves those GPU textures resident; each migration previously leaked
+        // six GLB maps plus one ground texture.
+        for (const value of Object.values(material)) {
+          if (!(value instanceof THREE.Texture) || disposedTextures.has(value)) continue;
+          value.dispose();
+          disposedTextures.add(value);
+        }
+        material.dispose();
+      }
+    });
+    this.models.delete(name);
+  }
+
+  /** Load one regional ground + authored landmark pack and release the previous pack. */
   async ensureRegionBundle(regionId: string): Promise<void> {
-    if (this.loadedRegionId === regionId && this.worldTextures.has(`region-${regionId}`)) return;
+    const landmarkKey = `region-${regionId}-landmark`;
+    if (this.loadedRegionId === regionId && this.worldTextures.has(`region-${regionId}`) && this.models.has(landmarkKey)) return;
     const bundle = regionAssetBundles[regionId];
     if (!bundle) throw new Error(`未知区域资源包: ${regionId}`);
     if (this.regionLoad) await this.regionLoad;
-    if (this.loadedRegionId === regionId && this.worldTextures.has(`region-${regionId}`)) return;
+    if (this.loadedRegionId === regionId && this.worldTextures.has(`region-${regionId}`) && this.models.has(landmarkKey)) return;
     const cached = this.worldTextures.get(`region-${regionId}`);
     if (cached) {
       const previous = this.worldTextures.get(`region-${this.loadedRegionId}`);
@@ -375,13 +446,18 @@ export class AssetLibrary {
         previous.dispose();
         this.worldTextures.delete(`region-${this.loadedRegionId}`);
       }
-      this.loadedRegionId = regionId;
-      return;
+      if (this.models.has(landmarkKey)) { this.loadedRegionId = regionId; return; }
     }
     this.regionLoad = (async () => {
-      const path = bundle.desktopPaths[0];
-      if (!path) throw new Error(`区域资源包缺少地表: ${bundle.id}`);
-      const texture = await this.textureLoader.loadAsync(`./${path}`);
+      const useMobile = window.matchMedia?.("(pointer: coarse)").matches;
+      const paths = useMobile ? bundle.mobilePaths : bundle.desktopPaths;
+      const texturePath = paths.find((path) => /\.(?:jpe?g|png|webp)$/i.test(path));
+      const modelPaths = paths.filter((path) => /\.glb$/i.test(path));
+      if (!texturePath || !modelPaths.length) throw new Error(`区域资源包缺少地表或实体地标: ${bundle.id}`);
+      const [texture, ...models] = await Promise.all([
+        this.textureLoader.loadAsync(`./${texturePath}`),
+        ...modelPaths.map((path) => this.gltf.loadAsync(`./${path}`))
+      ]);
       this.prepareRegionTexture(texture);
       const previousKey = `region-${this.loadedRegionId}`;
       const previous = this.worldTextures.get(previousKey);
@@ -390,6 +466,19 @@ export class AssetLibrary {
         this.worldTextures.delete(previousKey);
       }
       this.worldTextures.set(`region-${regionId}`, texture);
+      for (const name of this.loadedRegionModels) this.disposeModel(name);
+      this.loadedRegionModels.clear();
+      models.forEach((result, index) => {
+        const path = modelPaths[index]!;
+        const name = path.split("/").pop()!.replace(/\.glb$/i, "");
+        result.scene.traverse((child) => {
+          if (!(child instanceof THREE.Mesh)) return;
+          child.castShadow = true;
+          child.receiveShadow = true;
+        });
+        this.models.set(name, result.scene);
+        this.loadedRegionModels.add(name);
+      });
       this.loadedRegionId = regionId;
     })();
     try {
@@ -405,6 +494,10 @@ export class AssetLibrary {
     const copy = original.clone(true);
     copy.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return;
+      // Geometry belongs to the library source and is intentionally shared by
+      // all clones. World teardown may dispose clone materials, but must never
+      // invalidate this geometry while the source asset remains cached.
+      child.userData.sharedAssetGeometry = true;
       child.castShadow = true;
       child.receiveShadow = true;
       if (Array.isArray(child.material)) {
@@ -698,6 +791,79 @@ export class AssetLibrary {
       },
       hit() { container.userData.hitUntil = performance.now() + 240; },
       defeat() { container.userData.defeated = true; }
+    };
+  }
+
+  /** Clone one authored, independently equipped skeletal unit and bind its real clips. */
+  unit(kind: UnitVisualKind): CharacterRig {
+    const source = this.unitBases.get(kind);
+    if (!source) throw new Error(`缺少独立角色模型: unit-${kind}.glb`);
+    const body = skeletonClone(source.scene) as THREE.Group;
+    body.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      // SkeletonUtils keeps immutable mesh resources shared with the loaded GLB.
+      child.userData.sharedAssetGeometry = true;
+      child.userData.sharedAssetMaterial = true;
+    });
+    body.updateMatrixWorld(true);
+    const rawBounds = new THREE.Box3().setFromObject(body);
+    const rawSize = rawBounds.getSize(new THREE.Vector3());
+    const scale = rawSize.y > 0 ? 4.25 / rawSize.y : 1;
+    body.scale.setScalar(scale);
+    body.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(body);
+    const center = bounds.getCenter(new THREE.Vector3());
+    body.position.set(-center.x, -bounds.min.y, -center.z);
+    const root = new THREE.Group();
+    root.add(body);
+    root.userData.baseScale = 1;
+    root.userData.characterRoot = true;
+    root.userData.visualKind = kind;
+    root.userData.sourceAsset = `unit-${kind}.glb`;
+    const mixer = new THREE.AnimationMixer(body);
+    const clip = (name: string) => THREE.AnimationClip.findByName(source.animations, name);
+    const idle = clip("Idle") ? mixer.clipAction(clip("Idle")!) : null;
+    const run = clip("Run") ? mixer.clipAction(clip("Run")!) : null;
+    const attackName = kind === "shield" || kind === "shield-commander" ? "Punch" : kind === "sapper" || kind === "sapper-captain" || kind === "archer" ? "Dagger_Attack2" : "Dagger_Attack";
+    const attackAction = clip(attackName) ? mixer.clipAction(clip(attackName)!) : null;
+    const hitAction = clip("RecieveHit") ? mixer.clipAction(clip("RecieveHit")!) : null;
+    const defeatAction = clip("Death") ? mixer.clipAction(clip("Death")!) : null;
+    if (!idle || !run || !attackAction || !hitAction || !defeatAction) throw new Error(`unit-${kind}.glb 缺少必需骨骼动画`);
+    idle.play();
+    let moving = false;
+    let oneShot: THREE.AnimationAction | null = null;
+    const locomotion = () => moving ? run : idle;
+    const playOneShot = (action: THREE.AnimationAction, lock = false) => {
+      if (lock && root.userData.defeated) return;
+      oneShot?.stop();
+      locomotion()?.fadeOut(0.08);
+      action.reset().setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+      action.fadeIn(0.06).play();
+      oneShot = action;
+      if (lock) root.userData.defeated = true;
+      const finished = (event: { action: THREE.AnimationAction }) => {
+        if (event.action !== action) return;
+        mixer.removeEventListener("finished", finished);
+        if (!lock) {
+          oneShot = null;
+          locomotion()?.reset().fadeIn(0.12).play();
+        }
+      };
+      mixer.addEventListener("finished", finished);
+    };
+    return {
+      root, mixer, idle, run,
+      setMoving(next) {
+        if (next === moving) return;
+        moving = next;
+        if (oneShot || root.userData.defeated) return;
+        (next ? idle : run)?.fadeOut(0.16);
+        (next ? run : idle)?.reset().fadeIn(0.16).play();
+      },
+      attack: () => playOneShot(attackAction),
+      hit: () => playOneShot(hitAction),
+      defeat: () => playOneShot(defeatAction, true)
     };
   }
 }
@@ -1122,42 +1288,11 @@ export function makeFireTower(library: AssetLibrary, accent: number): THREE.Grou
 export function makeGatehouse(library: AssetLibrary, accent: number, stoneColor = 0x9a7655): THREE.Group {
   const group = new THREE.Group();
   group.userData.gate = true;
-  if (library.hasModel("village-arch") && library.hasModel("village-wall") && library.hasModel("village-door")) {
-    const arch = library.fittedModel("village-arch", [7.45, 5.2, 2.65], stoneColor, 0.12);
-    arch.position.set(0, 0.05, 0);
-    group.add(arch);
-    for (const side of [-1, 1]) {
-      const tower = library.fittedModel("village-wall", [3.75, 5.25, 3.45], stoneColor, 0.1);
-      tower.position.set(side * 5.05, 0, 0);
-      group.add(tower);
-      const gallery = library.fittedModel("village-balcony", [3.65, 0.95, 2.45], 0x4f392d, 0.08);
-      gallery.position.set(side * 5.05, 4.18, -0.72);
-      group.add(gallery);
-      const cap = library.model("tower-hexagon-roof", accent, 0.22);
-      cap.scale.set(0.92, 0.55, 0.78);
-      cap.position.set(side * 5.05, 4.72, 0);
-      group.add(cap);
-    }
-    for (const side of [-1, 1]) {
-      const pivot = new THREE.Group();
-      pivot.position.set(side * 3.15, 0.18, -0.18);
-      pivot.name = side < 0 ? "gate-left" : "gate-right";
-      const door = library.fittedModel("village-door", [3.08, 3.95, 0.42], 0x4b3327, 0.12);
-      door.position.set(-side * 1.54, 0, 0);
-      pivot.add(door);
-      group.add(pivot);
-    }
-    for (const side of [-1, 1]) {
-      const brazier = library.model("tower-hexagon-base", 0x5d5143, 0.18);
-      brazier.scale.setScalar(0.32);
-      brazier.position.set(side * 4.92, 4.95, -0.15);
-      group.add(brazier);
-      const light = new THREE.PointLight(0xf09a47, 1.55, 13, 2);
-      light.position.set(side * 4.92, 5.65, -0.15);
-      group.add(light);
-    }
-    return group;
-  }
+  // The old village-wall gate assembly is deliberately not used here. Several
+  // source submeshes have distant authored origins, so fitting the parent could
+  // leave two detached timber slabs at the defence sockets. A gate is a gameplay
+  // anchor; build its continuous structure from world-sized parts and use the
+  // source pack only for optional surface decoration below.
   const stone = material(stoneColor, 0.96, 0.04, "stone");
   const darkStone = material(0x66513f, 0.98, 0.04, "stone");
   const wood = material(0x3f2d22, 0.9, 0.04, "wood");
@@ -1452,6 +1587,77 @@ export function makeBuildModel(type: BuildingType, library: AssetLibrary, region
     wrapper.add(makeWorkshop(region, library));
   }
   return wrapper;
+}
+
+/**
+ * Apply a readable structural state without changing the registered footprint.
+ * Level parts are additive tools/bracing; damage alters individual materials and
+ * adds debris rather than shrinking the whole building (which broke collisions).
+ */
+export function applyBuildingVisualState(root: THREE.Group, building: BuildingState, region: RegionDefinition): void {
+  const previousState = root.getObjectByName("building-state");
+  if (previousState) {
+    previousState.removeFromParent();
+    previousState.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      child.geometry.dispose();
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      for (const entry of materials) entry.dispose();
+    });
+  }
+  const state = new THREE.Group();
+  state.name = "building-state";
+  const wood = material(0x5a3b29, 0.92, 0.03, "wood");
+  const iron = material(0x4b5554, 0.46, 0.58, "iron");
+  const accent = material(region.accent, 0.68, 0.18);
+
+  if (building.level >= 2) {
+    for (const side of [-1, 1]) {
+      const brace = new THREE.Mesh(new THREE.BoxGeometry(0.16, 1.7, 0.16), wood);
+      brace.position.set(side * 1.72, 0.86, 1.18);
+      brace.rotation.z = side * -0.34;
+      brace.castShadow = true;
+      state.add(brace);
+    }
+  }
+  if (building.level >= 3) {
+    const badge = new THREE.Mesh(new THREE.OctahedronGeometry(0.24, 0), accent);
+    badge.position.set(0, building.type === "market" || building.type === "workshop" ? 3.45 : 2.35, 0.8);
+    badge.scale.y = 1.35;
+    badge.name = `specialization-${building.specialization ?? "default"}`;
+    state.add(badge);
+    if (["ballista", "antiair", "trebuchet"].includes(building.type)) {
+      const sight = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.055, 7, 16), iron);
+      sight.position.set(0, 2.05, -0.25);
+      sight.rotation.y = Math.PI / 2;
+      state.add(sight);
+    }
+  }
+
+  const health = building.hp / Math.max(1, building.maxHp);
+  root.userData.visualState = `${building.level}:${building.specialization ?? "base"}:${health <= 0 ? "destroyed" : health < 0.62 ? "damaged" : "intact"}`;
+  if (health < 0.62) {
+    root.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return;
+      const materials = Array.isArray(child.material) ? child.material : [child.material];
+      child.material = materials.map((entry) => {
+        const clone = entry.clone();
+        if ("color" in clone && clone.color instanceof THREE.Color) clone.color.multiplyScalar(health <= 0 ? 0.38 : 0.68);
+        return clone;
+      });
+    });
+    const debrisCount = health <= 0 ? 7 : 3;
+    for (let index = 0; index < debrisCount; index += 1) {
+      const debris = new THREE.Mesh(new THREE.BoxGeometry(0.34 + (index % 3) * 0.09, 0.16, 0.22), index % 2 ? wood : iron);
+      const angle = index * 2.399;
+      debris.position.set(Math.cos(angle) * (1.15 + index * 0.09), 0.1, Math.sin(angle) * (0.9 + index * 0.07));
+      debris.rotation.set(0.15 * (index % 2), angle, 0.18 * ((index % 3) - 1));
+      debris.castShadow = true;
+      state.add(debris);
+    }
+  }
+  if (building.hp <= 0) root.rotation.z = 0.035;
+  root.add(state);
 }
 
 export function makeResource(type: "wood" | "stone" | "gear", library: AssetLibrary, accent: number, regionId = "oasis"): THREE.Group {

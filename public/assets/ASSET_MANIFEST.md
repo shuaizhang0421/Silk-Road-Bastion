@@ -76,6 +76,16 @@
 - 项目路径：`models/authored/desktop/silk-road-ballista.glb`、`models/authored/mobile/silk-road-ballista.glb`
 - 制作说明：原创四点砂岩锚座、木制叉架、旋转轴、分体弩臂和弩矢；删除旧模型的整块矩形平台，分别导出桌面和移动 LOD。
 
+### 丝路角色、敌军与首领实体（Blender 资产）
+
+- 作者：Silk Road Bastion project；人体骨骼与通用动作基于已登记的 Quaternius RPG Characters CC0 基模
+- 许可证基础：Creative Commons CC0 1.0 Universal；项目新增服装、护甲、武器、阵营轮廓和非人形机械设计可随本项目再分发
+- 源文件：本地非部署目录 `Silk-Road-Bastion-Source/blender/generate_unit_variants.py`
+- 项目路径：`models/authored/desktop/unit-*.glb` 与 `models/authored/mobile/unit-*.glb`
+- 独立人形：行者、沙匪、盾卫、爆破手、掠夺者、游弓手、盾卫统领、爆破队长；各自拥有不同服装、装备和武器轮廓，并保留 CC0 基模的 24 个骨骼动作片段
+- 独立非人形：丝翼机械鸢、鸢群首领、攻城锤、四足披甲攻城兽；未使用商业游戏提取模型、动作或贴图
+- 移动优化：每项均有单独移动 LOD；核心人体资产低于 12k 三角面，非人形资产低于 4k 三角面
+
 - 商栈、机巧工坊、火油塔、拒马、双开城门、门楼、驿站核心、遗物台和区域沙盘由项目代码实时组合生成。
 - 背景音乐、风声和所有音效由项目内 Web Audio API 实时合成，不包含第三方录音或受版权保护曲目。
 - 音乐旋律采用项目原创短音列，白天、夜袭和选择阶段会动态切换节奏与配器。
@@ -158,6 +168,8 @@
 - 包定义：`src/asset-manifest.ts` 中的 `regionAssetBundles`
 - 公共层：角色、敌人、城墙、门窗、货物、床弩、拒马和三类资源共用已登记的原创或 CC0 资产
 - 区域层：四张原创地表、区域顶点混色、独立道路轮廓、水体、天气、地标、生态组群和建筑配色
+- 实体地标：`models/regions/desktop/region-*-landmark.glb` 与 `models/regions/mobile/region-*-landmark.glb`，由本地非部署脚本 `Silk-Road-Bastion-Source/blender/generate_region_bundles.py` 原创生成；分别包含绿洲水渠商队亭、峡谷采石设施、雾港航标与栈道、星砂天文仪器，不使用商业游戏提取物
+- 加载策略：进入区域只加载当前地表和对应地标 GLB，迁营后释放旧区域纹理、几何和材质；标题仅加载绿洲预览包
 - 加载策略：首页只加载绿洲预览；新开局、续玩或迁营时加载目标区域地表，离开后释放上一非绿洲区域纹理；其他三区不进入首屏下载
 - 回退策略：包加载失败时显示具体错误并中止迁营，不以未登记几何占位继续正式流程
 

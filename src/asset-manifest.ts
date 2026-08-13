@@ -72,6 +72,15 @@ export const runtimeAssetManifest: AssetManifestEntry[] = [
     modified: "原创四点砂岩锚座、木制叉架、旋转轴、弩臂和弩矢；桌面与移动 LOD 均不含整块矩形底板"
   },
   {
+    id: "silk-road-authored-units",
+    path: "assets/models/authored/",
+    type: "model",
+    author: "Silk Road Bastion project / Quaternius CC0 skeleton base",
+    license: "CC0-1.0",
+    source: "Project-authored Blender generator derived from the registered Quaternius CC0 character base",
+    modified: "独立丝路服装、护甲、工具和武器轮廓；机械鸢、鸢群首领、攻城锤和四足攻城兽为原创非人形实体；桌面与移动 LOD 分别导出"
+  },
+  {
     id: "silk-road-procedural-soundscape-v2",
     path: "src/game.ts",
     type: "audio",
@@ -196,7 +205,8 @@ export const oasisEnvironmentClusters = regionEnvironmentClusters.filter((cluste
 const commonAssets = ["gatehouse", "market", "workshop", "resourceWood", "resourceStone"] as const;
 const regionBundle = (regionId: string, previewAssets: readonly string[]): RegionAssetBundle => ({
   id: `${regionId}-bundle`, regionId, commonAssets, regionAssets: [`region-${regionId}-ground`, `${regionId}-landmark`, `${regionId}-ecology`], previewAssets,
-  desktopPaths: [`assets/art/region-${regionId}-ground-v1.jpg`], mobilePaths: [`assets/art/region-${regionId}-ground-v1.jpg`],
+  desktopPaths: [`assets/art/region-${regionId}-ground-v1.jpg`, `assets/models/regions/desktop/region-${regionId}-landmark.glb`],
+  mobilePaths: [`assets/art/region-${regionId}-ground-v1.jpg`, `assets/models/regions/mobile/region-${regionId}-landmark.glb`],
   loadStage: regionId === "oasis" ? "title-preview" : "region-entry", release: "dispose-on-exit", compressedBudgetMb: [25, 55]
 });
 

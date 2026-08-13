@@ -39,18 +39,21 @@ const EXPEDITION_ZONES: BuildZoneDefinition[] = [
   zone("main-yard-east", "courtyard", 12.2, 1.1, 0, COURTYARD, [0, 1], -0.06),
   zone("stores-west", "logistics", -8.4, 12.2, 0, LOGISTICS, [], 0),
   zone("stores-east", "logistics", 8.4, 12.2, 0, LOGISTICS, [], 0),
-  zone("west-rampart", "defense", -18.4, -5.7, 1, DEFENSE, [-1, 0], 0.15, 1.15),
+  zone("west-rampart", "defense", -18.4, -5.7, 1, DEFENSE, [-1, 0], 0.15, 0.08),
   zone("east-court", "courtyard", 17.1, 5.7, 1, COURTYARD, [1], -0.08),
-  zone("east-rampart", "defense", 18.4, -5.7, 2, DEFENSE, [0, 1], -0.15, 1.15),
-  zone("west-siege", "siege", -17.2, 6.2, 2, SIEGE, [-1, 0], 0.08, 0.5),
+  zone("east-rampart", "defense", 18.4, -5.7, 2, DEFENSE, [0, 1], -0.15, 0.08),
+  zone("west-siege", "siege", -17.2, 6.2, 2, SIEGE, [-1, 0], 0.08, 0.08),
   zone("caravan-yard-west", "logistics", -11.2, 20.7, 3, LOGISTICS, [], 0),
   zone("caravan-yard-east", "logistics", 11.2, 20.7, 3, LOGISTICS, [], 0)
 ];
 
 const SURVIVAL_ZONES: BuildZoneDefinition[] = [
   ...EXPEDITION_ZONES.slice(0, 6),
-  zone("fixed-rampart", "defense", -18.1, -5.5, 0, DEFENSE, [-1, 0], 0.15, 1.05),
-  zone("fixed-flex-yard", "courtyard", 17.1, 5.7, 0, COURTYARD, [0, 1], -0.08)
+  zone("fixed-rampart", "defense", -18.1, -5.5, 0, DEFENSE, [-1, 0], 0.15, 0.08),
+  // The eighth fixed socket is the survival mode's only heavy emplacement.
+  // It accepts early ranged weapons, then the trebuchet from night six onward,
+  // without increasing the fixed eight-zone capacity.
+  zone("fixed-siege-yard", "siege", 17.1, 5.7, 0, SIEGE, [0, 1], -0.08, 0.08)
 ];
 
 export function fortLayout(
@@ -66,11 +69,15 @@ export function fortLayout(
   const zones = unlocked.map((entry) => ({ ...entry, position: { ...entry.position }, allowed: [...entry.allowed], coveredLanes: [...entry.coveredLanes] }));
 
   if (module === "high-ground") {
-    const target = zones.find((entry) => entry.type === "courtyard");
+    // High ground upgrades an existing wall/rampart socket. Elevating a normal
+    // courtyard socket created an isolated brown plinth in the middle of the
+    // yard and duplicated the functional support geometry.
+    const target = zones.find((entry) => entry.type === "defense" && Math.abs(entry.position.x) > 12)
+      ?? zones.find((entry) => entry.type === "defense");
     if (target) {
       target.type = "defense";
       target.allowed = [...DEFENSE];
-      target.elevation = Math.max(target.elevation, 1.35);
+      target.elevation = Math.max(target.elevation, 1.15);
     }
   } else if (module === "caravan-yard") {
     const target = [...zones].reverse().find((entry) => entry.type === "courtyard");

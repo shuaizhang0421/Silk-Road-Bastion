@@ -1,13 +1,14 @@
 import * as THREE from "three";
 import { buildingVisualDefinitions, modelGeometryContracts } from "../src/asset-manifest";
 import { regions } from "../src/data";
-import { makeBarricade, makeBuildModel, makeCore, makeFortWallSegment, makeGatehouse, makeMarket, makeWorkshop } from "../src/models";
-import type { BuildingType } from "../src/types";
+import { applyBuildingVisualState, makeBarricade, makeBuildModel, makeCore, makeFortWallSegment, makeGatehouse, makeMarket, makeWorkshop } from "../src/models";
+import type { BuildingState, BuildingType } from "../src/types";
 
 const mockLibrary = {
   hasModel: () => true,
   fittedModel: (_name: string, size: [number, number, number]) => {
     const root = new THREE.Group();
+    root.name = _name;
     const object = new THREE.Mesh(new THREE.BoxGeometry(...size), new THREE.MeshStandardMaterial());
     object.position.y = size[1] * 0.5;
     root.add(object);
@@ -15,6 +16,7 @@ const mockLibrary = {
   },
   model: (name: string) => {
     const root = new THREE.Group();
+    root.name = name;
     const dimensions: [number, number, number] = name === "silk-road-ballista" ? [3.45, 1.85, 2.55] : [2, 2, 2];
     const object = new THREE.Mesh(new THREE.BoxGeometry(...dimensions), new THREE.MeshStandardMaterial());
     object.position.y = dimensions[1] * 0.5;
@@ -28,6 +30,11 @@ const fixtures = {
   workshop: makeWorkshop(regions[0]!, mockLibrary),
   core: makeCore(regions[0]!.accent, regions[0]!.id, mockLibrary)
 };
+
+const gateFixture = makeGatehouse(mockLibrary, 0x3e8076, 0x9a7655);
+if (gateFixture.getObjectByName("village-balcony") || gateFixture.getObjectByName("tower-hexagon-roof") || gateFixture.getObjectByName("village-wall") || gateFixture.children.some((child) => /balcony|gallery/i.test(child.name))) {
+  throw new Error("Gatehouse reintroduced source modules with detached courtyard submeshes");
+}
 
 for (const [id, object] of Object.entries(fixtures)) {
   object.updateMatrixWorld(true);
@@ -98,6 +105,36 @@ for (const fixture of worldFixtures) {
     }
   });
   if (bounds.min.y < (fixture.minGround ?? -0.04)) throw new Error(`${fixture.id}: sinks below ground (${bounds.min.y.toFixed(2)})`);
+}
+
+// Upgrades and damage may add readable parts, but must never rescale or displace the
+// functional building footprint. This catches the class of regression where roofs,
+// foundations or whole structures changed size after an upgrade/repair refresh.
+for (const type of ["ballista", "fire", "market", "workshop", "antiair", "trebuchet"] as BuildingType[]) {
+  const model = makeBuildModel(type, mockLibrary, regions[0]!);
+  const footprint = new THREE.Box3().setFromObject(model);
+  const baseSize = footprint.getSize(new THREE.Vector3());
+  const building: BuildingState = {
+    id: `state-${type}`,
+    type,
+    padIndex: 0,
+    level: 3,
+    hp: 50,
+    maxHp: 180,
+    specialization: type === "market" ? "supply" : type === "workshop" ? "gear" : undefined,
+    status: { productionPaused: false, targeted: false, lastHitAt: 0 }
+  };
+  applyBuildingVisualState(model, building, regions[0]!);
+  if (model.scale.x !== 1 || model.scale.y !== 1 || model.scale.z !== 1) throw new Error(`${type}: visual state rescaled the building root`);
+  const state = model.getObjectByName("building-state");
+  if (!state || model.userData.visualState !== `3:${building.specialization ?? "base"}:damaged`) throw new Error(`${type}: damaged level state not registered`);
+  const afterSize = new THREE.Box3().setFromObject(model).getSize(new THREE.Vector3());
+  // Debris may extend slightly beyond compact towers, but never beyond the
+  // surrounding build-zone clearance.
+  if (afterSize.x > baseSize.x + 2.6 || afterSize.z > baseSize.z + 2.6) throw new Error(`${type}: visual state expanded footprint excessively`);
+  building.hp = 0;
+  applyBuildingVisualState(model, building, regions[0]!);
+  if (model.userData.visualState !== `3:${building.specialization ?? "base"}:destroyed`) throw new Error(`${type}: destroyed state not registered`);
 }
 
 console.log(`Geometry contract passed: ${Object.keys(fixtures).length} complete buildings, ${worldFixtures.length} gameplay structures and ${Object.keys(modelGeometryContracts).length} authored modules.`);

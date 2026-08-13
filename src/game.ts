@@ -19,15 +19,17 @@ import {
   qualityPresets,
   relics,
   ASSET_VERSION,
+  buildingDurabilityGrowth,
   PREVIOUS_SAVE_KEY,
   SAVE_KEY,
   SeedStreams,
-  upgradeCost
+  upgradeCost,
+  weaponLevelPower,
+  weaponLevelRate
 } from "./data";
 import {
   AssetLibrary,
-  decorateBoss,
-  enemyCharacterKind,
+  applyBuildingVisualState,
   makeBuildModel,
   makeCore,
   makeFortWallSegment,
@@ -729,6 +731,9 @@ export class SilkRoadGame {
   }
 
   showTitle(): void {
+    // Returning from a reward/route screen must not leave its exclusive HUD
+    // classes attached to the next mode selected on the title page.
+    this.resetTransientGameplayUi();
     this.titlePreview = true;
     this.running = false;
     // 初始构图固定在商路轴线上：首次打开即可同时辨认道路、城门、院内主帐。
@@ -779,8 +784,7 @@ export class SilkRoadGame {
     this.streams = new SeedStreams(this.state.rng);
     this.running = true;
     this.paused = false;
-    this.selectedBuild = null;
-    this.selectedBuildingId = null;
+    this.resetTransientGameplayUi();
     this.hornedThisDay = false;
     this.resetGameplayCamera();
     this.renderHotbar();
@@ -829,6 +833,7 @@ export class SilkRoadGame {
     this.streams = new SeedStreams(this.state.rng);
     this.running = true;
     this.paused = false;
+    this.resetTransientGameplayUi();
     this.hornedThisDay = this.state.phase === "day" && this.state.phaseTime <= 8;
     this.resetGameplayCamera();
     this.renderHotbar();
@@ -845,11 +850,13 @@ export class SilkRoadGame {
     }
     this.buildWorld();
     if (this.state.phase === "relic") {
+      this.setChoiceUi(true);
       const choices = this.state.pendingChoices
         .map((id) => relics.find((entry) => entry.id === id))
         .filter((entry): entry is (typeof relics)[number] => Boolean(entry));
       this.spawnChoices("relic", choices.map((entry) => ({ id: entry.id, color: entry.color })));
     } else if (this.state.phase === "route") {
+      this.setChoiceUi(true);
       this.spawnChoices("route", this.state.pendingChoices.map((id) => ({ id, color: regionById(id.split("|")[0]!).accent })));
     } else if (this.state.phase === "clear") {
       this.hud.clearTitle.textContent = "守夜成功";
@@ -1061,8 +1068,60 @@ export class SilkRoadGame {
     if (records) records.innerHTML = this.getRecordsText();
   }
 
+  private disposeWorldObject(root: THREE.Object3D): void {
+    const worldTextures = new Set<THREE.Texture>();
+    root.traverse((object) => {
+      if (!(object instanceof THREE.Mesh || object instanceof THREE.Points || object instanceof THREE.Line)) return;
+      // Each SkeletonUtils clone owns a bone DataTexture. Materials do not
+      // reference it, so a material-only sweep leaked one GPU texture per
+      // animated unit on every world rebuild.
+      if (object instanceof THREE.SkinnedMesh) object.skeleton.dispose();
+      if (!object.userData.sharedAssetGeometry) object.geometry.dispose();
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      for (const material of materials) {
+        // World clones share decoded images with the library, but their WebGL
+        // texture cache keys are renderer-owned. Explicitly releasing every map
+        // referenced by the departing world prevents seven stale GPU variants
+        // accumulating on each rebuild. The retained Texture objects upload
+        // again on demand when the next regional world is rendered.
+        for (const value of Object.values(material)) if (value instanceof THREE.Texture) worldTextures.add(value);
+        if (!object.userData.sharedAssetMaterial) material.dispose();
+      }
+    });
+    for (const texture of worldTextures) texture.dispose();
+  }
+
+  private removeWorldObject(root: THREE.Object3D | undefined): void {
+    if (!root) return;
+    this.world.remove(root);
+    this.disposeWorldObject(root);
+  }
+
   private clearWorld(): void {
+    // A region rebuild used to detach the previous world without releasing its
+    // generated terrain, roads, particles and building-state meshes. Repeated
+    // expeditions therefore accumulated GPU objects. Authored GLB geometry is
+    // marked as shared by AssetLibrary and remains cached; all transient scene
+    // resources are released here.
+    // Shadow render targets live on the light rather than under world, so scene
+    // removal alone cannot release them.
+    // Every rebuilt light may own one or more GPU render targets. Disposing only
+    // the cached sun reference left shadow textures behind when regional lamps
+    // or future spot lights were introduced. Release all scene-light targets
+    // before detaching the scene and clear render-list references afterwards.
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Light) || !("shadow" in object)) return;
+      const shadow = (object as THREE.DirectionalLight | THREE.PointLight | THREE.SpotLight).shadow;
+      shadow?.map?.dispose();
+      shadow?.mapPass?.dispose();
+      if (shadow) {
+        shadow.map = null;
+        shadow.mapPass = null;
+      }
+    });
+    if (this.world) this.disposeWorldObject(this.world);
     this.scene.clear();
+    this.renderer.renderLists.dispose();
     this.world = new THREE.Group();
     this.scene.add(this.world);
     this.buildPads = [];
@@ -1107,6 +1166,32 @@ export class SilkRoadGame {
     this.moonFillLight = undefined;
     this.clickRoute = [];
     this.moveRouteGuide = undefined;
+  }
+
+  /**
+   * Scene choices, previews and selection classes are transient UI, never save
+   * data. Reset them at every run boundary so a relic/route screen from the
+   * previous mode cannot hide the survival build bar in a new game.
+   */
+  private resetTransientGameplayUi(): void {
+    this.clearChoices();
+    this.selectedBuild = null;
+    this.selectedBuildingId = null;
+    this.selectedEnemyId = null;
+    this.selectedResourceId = null;
+    this.placingFortification = false;
+    this.hoveredPad = -1;
+    if (this.relocation) this.cancelRelocation(false);
+    if (this.preview) {
+      this.removeWorldObject(this.preview);
+      this.preview = undefined;
+    }
+    if (this.rangeIndicator) {
+      this.removeWorldObject(this.rangeIndicator);
+      this.rangeIndicator = undefined;
+    }
+    this.hud.context.classList.add("is-hidden");
+    this.setChoiceUi(false);
   }
 
   private buildWorld(): void {
@@ -1197,7 +1282,7 @@ export class SilkRoadGame {
     this.buildWeather(region);
 
     if (this.titlePreview) {
-      const rig = this.library.character("ranger", region.accent);
+      const rig = this.library.unit("player");
       rig.root.position.set(-2, 0, 5);
       rig.root.rotation.y = Math.PI;
       rig.setMoving(true);
@@ -1214,8 +1299,8 @@ export class SilkRoadGame {
       ballista.scale.setScalar(0.76);
       this.world.add(ballista);
       if (activeState.mode === "survival") {
-        (["raider", "brute", "raider"] as const).forEach((kind, index) => {
-          const enemyRig = this.library.character(kind, 0xb06a4c);
+        (["raider", "shield", "archer"] as const).forEach((kind, index) => {
+          const enemyRig = this.library.unit(kind);
           enemyRig.root.position.set(-6 + index * 5, 0, -22 - index * 2);
           enemyRig.root.rotation.y = Math.PI;
           enemyRig.setMoving(true);
@@ -1438,7 +1523,20 @@ export class SilkRoadGame {
     root.position.set(profile.landmarkPosition.x, this.terrainHeightAt(profile.landmarkPosition.x, profile.landmarkPosition.z, region), profile.landmarkPosition.z);
     root.rotation.y = 0.28;
     root.name = `landmark-${profile.landmark}`;
-    if (profile.landmark === "oasis-channel") {
+    const authoredLandmark = `region-${region.id}-landmark`;
+    if (this.library.hasModel(authoredLandmark)) {
+      const model = this.library.model(authoredLandmark);
+      model.name = "authored-region-landmark";
+      // Authored bundles use common world dimensions and keep Y=0 at terrain contact.
+      const scale = region.id === "oasis" ? 0.92 : region.id === "canyon" ? 0.86 : region.id === "mist" ? 0.82 : 0.9;
+      model.scale.setScalar(scale);
+      root.add(model);
+      if (region.id === "mist") {
+        const lamp = new THREE.PointLight(0xe5b35d, 2.1, 25, 2);
+        lamp.position.set(3.5, 6.8, 3.6);
+        root.add(lamp);
+      }
+    } else if (profile.landmark === "oasis-channel") {
       // 水渠已作为连续地形的一部分生成；地标只保留渠边驿亭和取水设施，
       // 避免再叠一张矩形水面。
       const shrine = this.library.model("tower-hexagon-base", 0x8e795f, 0.34);
@@ -1541,11 +1639,9 @@ export class SilkRoadGame {
     const layout = this.currentFortLayout();
     root.name = `region-module-${this.state.regionModule}`;
     if (this.state.regionModule === "high-ground") {
-      const zone = layout.zones.find((entry) => entry.elevation >= 1.35) ?? layout.zones.find((entry) => entry.type === "defense")!;
-      const terrace = new THREE.Mesh(new THREE.CylinderGeometry(5.8, 7.1, 1.1, 16), new THREE.MeshStandardMaterial({ color: 0x766451, roughness: 0.98 }));
-      terrace.position.set(zone.position.x, 0.55, zone.position.z);
-      terrace.receiveShadow = true;
-      root.add(terrace);
+      // Geometry is owned entirely by buildWalls(): one paved, wall-connected
+      // bastion. Keeping decorative module meshes here caused duplicate supports
+      // and a detached horizontal board in the courtyard.
     } else if (this.state.regionModule === "side-gate") {
       const arch = this.library.model("wall-doorway", region.accent, 0.38);
       arch.scale.setScalar(2.05); arch.position.set(this.fortHalfWidth(), 0, 2.8); arch.rotation.y = Math.PI / 2;
@@ -1622,7 +1718,7 @@ export class SilkRoadGame {
   }
 
   private clearAdventureProps(): void {
-    for (const object of this.adventureProps) this.world.remove(object);
+    for (const object of this.adventureProps) this.removeWorldObject(object);
     this.adventureProps = [];
   }
 
@@ -1709,7 +1805,7 @@ export class SilkRoadGame {
     this.state.phase = "adventure";
     this.state.enemies = [];
     this.spawnQueue = [];
-    this.enemyObjects.forEach((visual) => { this.world.remove(visual.object); visual.label.remove(); });
+    this.enemyObjects.forEach((visual) => { this.removeWorldObject(visual.object); visual.label.remove(); });
     this.enemyObjects.clear();
     this.clearAdventureProps();
     this.spawnAdventureSet(adventure.roomKind);
@@ -1898,19 +1994,61 @@ export class SilkRoadGame {
     add("wall-corner", halfWidth, -12, 0, 2.3);
     add("wall-corner", -halfWidth, backZ, Math.PI, 2.3);
     add("wall-corner", halfWidth, backZ, -Math.PI / 2, 2.3);
-    if (this.state?.mode === "expedition" && this.state.expansionLevel >= 2) {
-      // Shallow projecting bastions create crossfire without adding a second gate.
-      for (const side of [-1, 1]) {
+    const raisedDefenseSides = new Set(
+      this.currentFortLayout().zones
+        .filter((zone) => zone.type === "defense" && zone.elevation > 0.35 && Math.abs(zone.position.x) > 12)
+        .map((zone) => Math.sign(zone.position.x) || 1)
+    );
+    if (raisedDefenseSides.size > 0) {
+      // Raised defence sockets share one wall-connected bastion per side. The
+      // build socket contributes no second plinth, preventing the overlapping
+      // discs/boxes that previously appeared beneath ballistae.
+      for (const side of raisedDefenseSides) {
         const bastionX = side * (halfWidth - 2.1);
+        const stone = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(region.floor).lerp(new THREE.Color(0xb59a70), 0.18),
+          map: this.library.worldTexture("pbr-stone-color") ?? null,
+          normalMap: this.library.worldTexture("pbr-stone-normal") ?? null,
+          normalScale: new THREE.Vector2(0.34, 0.34),
+          roughnessMap: this.library.worldTexture("pbr-stone-roughness") ?? null,
+          roughness: 0.96
+        });
         const terrace = new THREE.Mesh(
-          new THREE.CylinderGeometry(4.35, 4.85, 1.05, 12),
-          new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.96 })
+          new THREE.BoxGeometry(8.6, 1.05, 6.25),
+          stone
         );
-        terrace.position.set(bastionX, 0.52, -9.7);
-        terrace.scale.z = 0.72;
+        terrace.name = "integrated-side-bastion";
+        terrace.position.set(bastionX, 0.52, -9.25);
         terrace.receiveShadow = true;
         terrace.castShadow = true;
         this.world.add(terrace);
+        const frontCourse = new THREE.Mesh(
+          new THREE.BoxGeometry(8.95, 0.22, 0.42),
+          new THREE.MeshStandardMaterial({ color: 0x715a45, roughness: 0.92 })
+        );
+        frontCourse.position.set(bastionX, 1.08, -12.18);
+        frontCourse.castShadow = true;
+        frontCourse.receiveShadow = true;
+        this.world.add(frontCourse);
+        // A paved top and inner parapet make the projection read as a usable
+        // wall terrace instead of a featureless brown cuboid.
+        const deck = new THREE.Mesh(
+          new THREE.BoxGeometry(8.2, 0.12, 5.82),
+          new THREE.MeshStandardMaterial({ color: region.floor, map: this.library.worldTexture("pbr-stone-color") ?? null, roughness: 0.94 })
+        );
+        deck.name = "bastion-paved-deck";
+        deck.position.set(bastionX, 1.09, -9.18);
+        deck.receiveShadow = true;
+        this.world.add(deck);
+        const innerParapet = new THREE.Mesh(
+          new THREE.BoxGeometry(8.7, 0.62, 0.42),
+          new THREE.MeshStandardMaterial({ color: wallColor, map: this.library.worldTexture("pbr-stone-color") ?? null, roughness: 0.96 })
+        );
+        innerParapet.name = "bastion-inner-parapet";
+        innerParapet.position.set(bastionX, 1.37, -6.2);
+        innerParapet.castShadow = true;
+        innerParapet.receiveShadow = true;
+        this.world.add(innerParapet);
       }
     }
     const gate = makeGatehouse(this.library, region.accent, wallColor);
@@ -2113,9 +2251,20 @@ export class SilkRoadGame {
       // The transparent hit surface is always raycastable, while the visible foundation
       // only appears during build/relocation. The courtyard therefore reads as a real place,
       // not a board covered in permanent game tokens.
+      const padHitMaterial = new THREE.MeshBasicMaterial({
+        transparent: true,
+        opacity: 0,
+        colorWrite: false,
+        depthWrite: false,
+        depthTest: false
+      });
+      padHitMaterial.visible = false;
       const pad = new THREE.Mesh(
-        new THREE.BoxGeometry(size, 0.12, zone.type === "siege" ? 5.2 : 4.2),
-        new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.001, depthWrite: false })
+        // A shallow hit box remains easier to select than a mathematical plane on
+        // touch screens. Its material is never submitted to the colour/depth pass;
+        // Mesh.raycast still uses the geometry even when Material.visible is false.
+        new THREE.BoxGeometry(size, 0.035, zone.type === "siege" ? 5.2 : 4.2),
+        padHitMaterial
       );
       pad.position.copy(this.zonePosition(index)).add(new THREE.Vector3(0, 0.08, 0));
       pad.rotation.y = zone.rotation;
@@ -2125,25 +2274,27 @@ export class SilkRoadGame {
       // character meshes. Building is a mode, so intercepting the click here is
       // intentional and prevents the player from walking away instead of building.
       pad.renderOrder = 40;
-      if (zone.elevation > 0.35) {
+      if (zone.elevation > 0.35 && zone.type === "siege") {
         // Raised defence sockets are wall terraces, not isolated polygonal mounds.
         // A rectangular sandstone plinth aligns with the fort architecture and
         // leaves a clear mounting surface without looking like a board-game token.
         const supportMaterial = new THREE.MeshStandardMaterial({
-          color: new THREE.Color(region.floor).lerp(new THREE.Color(0x6d5b48), 0.45),
-          map: this.library.worldTexture("stone") ?? null,
+          color: new THREE.Color(region.floor).lerp(new THREE.Color(0x75624e), 0.24),
+          map: this.library.worldTexture("pbr-stone-color") ?? null,
+          normalMap: this.library.worldTexture("pbr-stone-normal") ?? null,
+          normalScale: new THREE.Vector2(0.44, 0.44),
+          roughnessMap: this.library.worldTexture("pbr-stone-roughness") ?? null,
           roughness: 0.95
         });
-        const isFrontDefense = zone.type === "defense" && zone.position.z < -4;
-        const supportDepth = isFrontDefense ? 7.1 : zone.type === "siege" ? 4.85 : 3.9;
+        const supportDepth = 4.85;
         const support = new THREE.Mesh(
           new THREE.BoxGeometry(size * 1.06, zone.elevation + 0.22, supportDepth),
           supportMaterial
         );
+        support.name = `integrated-zone-support:${zone.id}`;
         support.position.copy(this.zonePosition(index));
-        if (isFrontDefense) support.position.z -= 1.55;
         support.position.y = (zone.elevation + 0.22) * 0.5 - 0.06;
-        support.rotation.y = isFrontDefense ? 0 : zone.rotation;
+        support.rotation.y = zone.rotation;
         support.receiveShadow = true;
         support.castShadow = true;
         support.userData.ground = true;
@@ -2153,12 +2304,29 @@ export class SilkRoadGame {
           new THREE.MeshStandardMaterial({ color: 0x7c654c, roughness: 0.9 })
         );
         terraceTrim.position.copy(this.zonePosition(index));
-        if (isFrontDefense) terraceTrim.position.z -= 1.55;
         terraceTrim.position.y = zone.elevation + 0.1;
-        terraceTrim.rotation.y = isFrontDefense ? 0 : zone.rotation;
+        terraceTrim.rotation.y = zone.rotation;
         terraceTrim.receiveShadow = true;
         terraceTrim.userData.ground = true;
         this.world.add(terraceTrim);
+        // Short masonry piers make the plinth read as a supported wall
+        // emplacement instead of a floating game-board rectangle.
+        const pierMaterial = new THREE.MeshStandardMaterial({
+          color: new THREE.Color(region.floor).lerp(new THREE.Color(0x66513e), 0.34),
+          map: this.library.worldTexture("pbr-stone-color") ?? null,
+          roughness: 0.96
+        });
+        for (const side of [-1, 1]) {
+          const pier = new THREE.Mesh(new THREE.BoxGeometry(0.58, zone.elevation + 0.54, 0.78), pierMaterial);
+          pier.name = `zone-support-pier:${zone.id}`;
+          pier.position.copy(support.position);
+          pier.position.x += side * size * 0.45;
+          pier.position.y = (zone.elevation + 0.54) * 0.5 - 0.08;
+          pier.position.z += supportDepth * 0.38;
+          pier.castShadow = true;
+          pier.receiveShadow = true;
+          this.world.add(pier);
+        }
       }
       const isTutorialTarget = this.tutorialPadIndex() === index;
       const zoneMaterial = new THREE.MeshStandardMaterial({
@@ -2195,34 +2363,9 @@ export class SilkRoadGame {
       pad.add(marker);
       pad.userData.zoneMarker = marker;
       pad.userData.zoneMaterial = zoneMaterial;
-      if (isFreshExpansion) {
-        const expansionMarker = new THREE.Group();
-        expansionMarker.name = "expansion-pad-marker";
-        const timber = new THREE.MeshStandardMaterial({ color: 0x715036, roughness: 0.94 });
-        for (const x of [-1.42, 1.42]) {
-          const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 2.05, 7), timber);
-          post.position.set(x, 1.02, 1.22);
-          post.castShadow = true;
-          expansionMarker.add(post);
-        }
-        const crossbar = new THREE.Mesh(new THREE.BoxGeometry(3.02, 0.11, 0.12), timber);
-        crossbar.position.set(0, 1.86, 1.22);
-        crossbar.castShadow = true;
-        expansionMarker.add(crossbar);
-        const banner = this.library.model("flag-banner-long", region.accent, 0.28);
-        banner.position.set(0.18, 2.1, 1.18);
-        banner.scale.setScalar(0.62);
-        expansionMarker.add(banner);
-        const signal = new THREE.Mesh(
-          new THREE.OctahedronGeometry(0.22, 0),
-          new THREE.MeshStandardMaterial({ color: 0xe4b04d, emissive: 0xe4b04d, emissiveIntensity: 0.55, roughness: 0.5 })
-        );
-        signal.name = "expansion-pad-signal";
-        signal.position.set(0, 2.32, 1.16);
-        expansionMarker.add(signal);
-        pad.add(expansionMarker);
-        pad.userData.expansionMarker = expansionMarker;
-      }
+      // Newly unlocked sockets are explained by the reorganisation prompt and
+      // appear as corner outlines only after the player picks a building. A
+      // permanent scaffold here looked like a broken wall floating in the yard.
       this.world.add(pad);
       this.buildPads.push(pad);
     });
@@ -2750,7 +2893,7 @@ function makeWindWornMound(
 
   private spawnPlayer(region: RegionDefinition): void {
     if (!this.state) return;
-    const rig = this.library.character("ranger", region.accent);
+    const rig = this.library.unit("player");
     const startY = this.isInsideFort(new THREE.Vector3(this.state.player.position.x, 0, this.state.player.position.z))
       ? 0
       : this.terrainHeightAt(this.state.player.position.x, this.state.player.position.z, region);
@@ -3000,7 +3143,7 @@ function makeWindWornMound(
     const lateNight = this.state.mode === "survival" ? this.state.epoch : this.state.expansionLevel * 3 + 1;
     if (type === "fire") return this.state.mode === "survival" ? lateNight >= 3 : this.state.expansionLevel >= 1;
     if (type === "antiair") return lateNight >= 4;
-    if (type === "trebuchet") return this.state.mode === "survival" ? lateNight >= 6 : this.state.expansionLevel >= 3;
+    if (type === "trebuchet") return this.state.mode === "survival" ? lateNight >= 6 : this.state.expansionLevel >= 2;
     return true;
   }
 
@@ -3135,6 +3278,18 @@ function makeWindWornMound(
       return;
     }
     const definition = buildings[type];
+    const layout = this.currentFortLayout();
+    const compatible = layout.zones
+      .map((zone, index) => ({ zone, index }))
+      .filter(({ zone }) => canBuildInZone(type, zone));
+    if (!compatible.length) {
+      this.setPrompt("ph-map-pin", `${definition.name}暂时没有适合的功能区域`);
+      return;
+    }
+    if (compatible.every(({ index }) => this.state!.buildings.some((building) => building.padIndex === index))) {
+      this.setPrompt("ph-layout", `${definition.name}的合法位置已占满，请先迁移或回收现有建筑`);
+      return;
+    }
     // 材料不足时仍允许点一次：直接说清缺口比把图标静默置灰更容易理解，
     // 也避免玩家误以为按钮失灵而连续点击。
     if (!canAfford(this.state.resources, definition.cost)) {
@@ -3145,7 +3300,7 @@ function makeWindWornMound(
     this.selectedBuild = this.selectedBuild === type ? null : type;
     this.selectedBuildingId = null;
     if (this.rangeIndicator) {
-      this.world.remove(this.rangeIndicator);
+      this.removeWorldObject(this.rangeIndicator);
       this.rangeIndicator = undefined;
     }
     this.hud.context.classList.add("is-hidden");
@@ -3304,7 +3459,7 @@ function makeWindWornMound(
       this.selectedResourceId = null;
       this.selectedBuildingId = null;
       if (this.rangeIndicator) {
-        this.world.remove(this.rangeIndicator);
+        this.removeWorldObject(this.rangeIndicator);
         this.rangeIndicator = undefined;
       }
       this.hud.context.classList.add("is-hidden");
@@ -3365,7 +3520,7 @@ function makeWindWornMound(
 
   private updatePreview(): void {
     if (this.preview) {
-      this.world.remove(this.preview);
+      this.removeWorldObject(this.preview);
       this.preview = undefined;
     }
     if (this.hoveredPad < 0 || !this.state) return;
@@ -3463,6 +3618,7 @@ function makeWindWornMound(
     if (!this.state) return;
     building.status ??= { productionPaused: building.hp <= 0, targeted: false, lastHitAt: 0 };
     const model = makeBuildModel(building.type, this.library, regionById(this.state.regionId));
+    applyBuildingVisualState(model, building, regionById(this.state.regionId));
     const zone = this.currentFortLayout().zones[building.padIndex];
     model.position.copy(this.zonePosition(building.padIndex));
     model.rotation.y = zone?.rotation ?? 0;
@@ -3482,6 +3638,24 @@ function makeWindWornMound(
     this.positionElement(label, model.position.clone().setY(5.5));
   }
 
+  private refreshBuildingVisual(building: BuildingState): void {
+    if (!this.state) return;
+    const previous = this.buildingObjects.get(building.id);
+    const zone = this.currentFortLayout().zones[building.padIndex];
+    const model = makeBuildModel(building.type, this.library, regionById(this.state.regionId));
+    applyBuildingVisualState(model, building, regionById(this.state.regionId));
+    model.position.copy(this.zonePosition(building.padIndex));
+    model.rotation.y = zone?.rotation ?? 0;
+    model.userData.buildingId = building.id;
+    model.traverse((child) => { child.userData.buildingId = building.id; });
+    if (previous) {
+      this.removeWorldObject(previous);
+    }
+    this.world.add(model);
+    this.registerOccluders(model);
+    this.buildingObjects.set(building.id, model);
+  }
+
   private selectBuilding(id: string): void {
     if (!this.state) return;
     if (this.relocation && this.relocation.buildingId !== id) this.cancelRelocation(false);
@@ -3490,7 +3664,7 @@ function makeWindWornMound(
     if (!building || !object) return;
     this.selectedBuildingId = id;
     if (this.rangeIndicator) {
-      this.world.remove(this.rangeIndicator);
+      this.removeWorldObject(this.rangeIndicator);
       this.rangeIndicator = undefined;
     }
     this.selectedBuild = null;
@@ -3559,12 +3733,14 @@ function makeWindWornMound(
       return;
     }
     pay(this.state.resources, cost);
+    const healthRatio = building.hp / Math.max(1, building.maxHp);
     building.level += 1;
-    building.maxHp = Math.round(building.maxHp * 1.28);
-    building.hp = building.maxHp;
+    building.maxHp = Math.round(building.maxHp * buildingDurabilityGrowth(building.level - 1));
+    // Upgrading expands the structure but does not replace paid repairs.
+    building.hp = Math.max(1, Math.round(building.maxHp * healthRatio));
     this.state.prosperity += 1;
+    this.refreshBuildingVisual(building);
     const object = this.buildingObjects.get(building.id);
-    object?.scale.multiplyScalar(1.055);
     if (object) this.burst(object.position.clone().setY(3), 0xe2ad55, 9);
     this.sound.build();
     if (this.state.tutorialStep === 4) {
@@ -3585,6 +3761,7 @@ function makeWindWornMound(
     if (modes.length < 2) return;
     const current = modes.indexOf(this.activeSpecialization(building));
     building.specialization = modes[(current + 1) % modes.length]!;
+    this.refreshBuildingVisual(building);
     this.sound.build();
     this.setPrompt("ph-gear-six", `${buildings[building.type].name}已专精为${this.specializationModeName(building.specialization)}`);
     this.selectBuilding(building.id);
@@ -3636,8 +3813,7 @@ function makeWindWornMound(
     building.hp = building.maxHp;
     building.status.productionPaused = false;
     building.status.targeted = false;
-    const object = this.buildingObjects.get(building.id);
-    object?.scale.setScalar(Math.pow(1.055, Math.max(0, building.level - 1)));
+    this.refreshBuildingVisual(building);
     this.sound.build();
     this.setPrompt("ph-hammer", `${buildings[building.type].name} 已修复，支付 ${this.formatCost(cost)}`);
     this.updateHud(true);
@@ -3852,7 +4028,7 @@ function makeWindWornMound(
     const object = this.buildingObjects.get(building.id);
     if (object) {
       this.burst(object.position.clone().setY(1.2), 0xb79a65, 11);
-      this.world.remove(object);
+      this.removeWorldObject(object);
     }
     this.buildingObjects.delete(building.id);
     this.buildingCooldowns.delete(building.id);
@@ -3863,7 +4039,7 @@ function makeWindWornMound(
     this.selectedBuildingId = null;
     this.hud.context.classList.add("is-hidden");
     if (this.rangeIndicator) {
-      this.world.remove(this.rangeIndicator);
+      this.removeWorldObject(this.rangeIndicator);
       this.rangeIndicator = undefined;
     }
     this.sound.build();
@@ -3926,10 +4102,10 @@ function makeWindWornMound(
       const next = (["木材", "石料", "机巧"] as const)[this.state.workshopRotation % 3]!;
       return `每 3 秒轮换材料 +${amount} · 下一次：${next}`;
     }
-    if (building.type === "ballista") return building.level < 3 ? `远程伤害 ${18 * building.level} · 射程 ${this.towerRange(building).toFixed(0)}` : this.activeSpecialization(building) === "watch" ? `瞭望弩：射程 ${this.towerRange(building).toFixed(0)}，射速提高` : `破甲弩：远程伤害 ${18 * building.level}，重甲目标更痛`;
-    if (building.type === "fire") return building.level < 3 ? `快速伤害 ${11 * building.level}，Lv.3 可选燃烧或黏滞专精` : this.activeSpecialization(building) === "tar" ? `黏滞油：减速更强、更久` : `燃烧油：快速伤害 ${11 * building.level}，附带灼烧`;
-    if (building.type === "antiair") return building.level < 3 ? `优先击落飞行机关，Lv.3 可选猎空或连射专精` : this.activeSpecialization(building) === "volley" ? `连射弩：优先连射多名飞行机关` : `猎空弩：对空伤害 ${26 * building.level}，专杀飞行机关`;
-    if (building.type === "trebuchet") return building.level < 3 ? `远程震石 ${34 * building.level}，Lv.3 可选攻城或震裂专精` : this.activeSpecialization(building) === "shatter" ? `震裂投车：爆炸范围扩大` : `攻城投车：对攻城兽与重甲目标更强`;
+    if (building.type === "ballista") return building.level < 3 ? `远程伤害 ${Math.round(18 * weaponLevelPower(building.level))} · 射程 ${this.towerRange(building).toFixed(0)}` : this.activeSpecialization(building) === "watch" ? `瞭望弩：射程 ${this.towerRange(building).toFixed(0)}，射速提高` : `破甲弩：远程伤害 ${Math.round(18 * weaponLevelPower(building.level))}，重甲目标更痛`;
+    if (building.type === "fire") return building.level < 3 ? `快速伤害 ${Math.round(11 * weaponLevelPower(building.level))}，Lv.3 可选燃烧或黏滞专精` : this.activeSpecialization(building) === "tar" ? `黏滞油：减速更强、更久` : `燃烧油：快速伤害 ${Math.round(11 * weaponLevelPower(building.level))}，附带灼烧`;
+    if (building.type === "antiair") return building.level < 3 ? `优先击落飞行机关，Lv.3 可选猎空或连射专精` : this.activeSpecialization(building) === "volley" ? `连射弩：优先连射多名飞行机关` : `猎空弩：对空伤害 ${Math.round(26 * weaponLevelPower(building.level))}，专杀飞行机关`;
+    if (building.type === "trebuchet") return building.level < 3 ? `远程震石 ${Math.round(34 * weaponLevelPower(building.level))}，Lv.3 可选攻城或震裂专精` : this.activeSpecialization(building) === "shatter" ? `震裂投车：爆炸范围扩大` : `攻城投车：对攻城兽与重甲目标更强`;
     return `附近敌人减速，范围 ${Math.round((4.5 + building.level * 0.55) * 10) / 10}`;
   }
 
@@ -4431,7 +4607,7 @@ function makeWindWornMound(
   }
 
   private clearMoveRouteGuide(): void {
-    if (this.moveRouteGuide) this.world.remove(this.moveRouteGuide);
+    if (this.moveRouteGuide) this.removeWorldObject(this.moveRouteGuide);
     this.moveRouteGuide = undefined;
   }
 
@@ -4481,10 +4657,15 @@ function makeWindWornMound(
 
   private autoInteract(): void {
     if (!this.playerRig || !this.state || this.state.phase !== "day") return;
-    const near = this.resources.find((resource) => {
-      const threshold = resource.id === this.selectedResourceId ? 6.1 : 3.4;
-      return resource.position.distanceTo(this.playerRig!.root.position) < threshold;
-    });
+    // A selected resource owns the current route. Previously the player could pass
+    // another pile, auto-collect it, and have that incidental pickup cancel the route
+    // while the original target stayed selected on the opposite side of the map.
+    const selected = this.selectedResourceId
+      ? this.resources.find((resource) => resource.id === this.selectedResourceId)
+      : undefined;
+    const near = selected
+      ? selected.position.distanceTo(this.playerRig.root.position) < 6.1 ? selected : undefined
+      : this.resources.find((resource) => resource.position.distanceTo(this.playerRig!.root.position) < 3.4);
     if (near) {
       this.collectResource(near);
       return;
@@ -4536,14 +4717,17 @@ function makeWindWornMound(
     amount = Math.round(amount * (1 + gatherStacks * 0.2));
     this.state.resources[key] += amount;
     this.state.gathered.push(resource.id);
-    this.world.remove(resource.object);
+    this.removeWorldObject(resource.object);
     this.resourceLabels.get(resource.id)?.remove();
     this.resourceLabels.delete(resource.id);
     this.resources = this.resources.filter((node) => node !== resource);
-    if (this.selectedResourceId === resource.id) this.selectedResourceId = null;
-    this.clickTarget = null;
-    this.clickRoute = [];
-    this.clearMoveRouteGuide();
+    const completedSelectedRoute = this.selectedResourceId === resource.id;
+    if (completedSelectedRoute) this.selectedResourceId = null;
+    if (completedSelectedRoute || !this.selectedResourceId) {
+      this.clickTarget = null;
+      this.clickRoute = [];
+      this.clearMoveRouteGuide();
+    }
     this.sound.coin();
     this.burst(resource.position.clone().setY(1.2), regionById(this.state.regionId).accent, 10);
     this.setPrompt(key === "wood" ? "ph-tree" : key === "stone" ? "ph-mountains" : "ph-gear-six", `获得 ${amount}${key === "wood" ? " 木材" : key === "stone" ? " 石料" : " 机巧"}`);
@@ -4564,7 +4748,7 @@ function makeWindWornMound(
     }
     if (this.fieldObject) {
       this.burst(this.fieldObject.position.clone().setY(2), regionById(this.state.regionId).accent, 18);
-      this.world.remove(this.fieldObject);
+      this.removeWorldObject(this.fieldObject);
       this.fieldObject = undefined;
     }
     if (objective.type === "elite" || objective.type === "scout") this.state.scoutIntel = Math.max(this.state.scoutIntel ?? 0, 1);
@@ -4991,7 +5175,9 @@ function makeWindWornMound(
     this.hud.context.classList.add("is-hidden");
     const defensePower = this.state.buildings.reduce((sum, building) => {
       const definition = buildings[building.type];
-      return sum + (definition.attack ?? 1) * building.level;
+      if (!definition.attack || !definition.cooldown || building.hp <= 0) return sum;
+      const rangeWeight = definition.range ? THREE.MathUtils.clamp(definition.range / 30, 0.65, 1.45) : 1;
+      return sum + (definition.attack * weaponLevelPower(building.level) * weaponLevelRate(building.level) * rangeWeight) / definition.cooldown;
     }, 0);
     const directorGenerated = directorWave(
       {
@@ -5055,7 +5241,10 @@ function makeWindWornMound(
         marchSpeed: combatSpeed * 1.6,
         combatSpeed,
         damage: definition.damage * damageScale * tutorialDamage * (isBoss ? 1.55 : elite ? 1.28 : 1) * (this.state!.nightModifier?.enemyDamage ?? 1),
-        position: { x: (this.streams!.next("combat") - 0.5) * 5.8, z: -23.4 - (index % 3) * 0.65 },
+        // Start outside the basic ballista's effective radius. Fast marching
+        // keeps the first contact prompt, while long-range trebuchets retain a
+        // real deployment advantage.
+        position: { x: (this.streams!.next("combat") - 0.5) * 8.4, z: -47.5 - (index % 3) * 1.2 },
         target: type === "flyer" ? "building" : "gate",
         targetId: null,
         attackCooldown: 0,
@@ -5099,7 +5288,8 @@ function makeWindWornMound(
     if (!this.state) return;
     this.spawnCooldown -= delta;
     if (this.spawnQueue.length && this.spawnCooldown <= 0) {
-      this.spawnCooldown = 0.35 + (this.streams?.next("combat") ?? 0.5) * 0.2;
+      const lateFormationSpacing = this.state.epoch >= 16 ? 0.62 : this.state.epoch >= 9 ? 0.5 : 0.35;
+      this.spawnCooldown = lateFormationSpacing + (this.streams?.next("combat") ?? 0.5) * 0.2;
       const enemy = this.spawnQueue.shift()!;
       this.state.enemies.push(enemy);
       this.createEnemyVisual(enemy);
@@ -5115,7 +5305,7 @@ function makeWindWornMound(
     if (!this.state || this.supportAllies.length) return;
     const accent = regionById(this.state.regionId).accent;
     for (const x of [-5.2, 5.2]) {
-      const rig = this.library.character("ranger", accent);
+      const rig = this.library.unit("player");
       rig.root.position.set(x, 0, -7.4);
       rig.root.rotation.y = Math.PI;
       rig.root.userData.supportAlly = true;
@@ -5160,100 +5350,30 @@ function makeWindWornMound(
     const root = new THREE.Group();
     let rig: CharacterRig | undefined;
     if (enemy.type === "ram" && enemy.bossKind === "siege-beast") {
-      // 披甲攻城兽使用独立重型角色轮廓；普通攻城锤仍保留为器械单位，二者不再只是缩放差异。
-      rig = this.library.character("brute", 0x8f4f3f);
-      rig.setMoving(true);
-      rig.root.scale.set(1.35, 1.18, 1.5);
-      root.add(rig.root);
+      // 四足披甲攻城兽使用独立非人形资产，不再由重甲人形放大冒充。
+      const beast = this.library.model("unit-siege-beast");
+      beast.rotation.y = Math.PI;
+      root.add(beast);
     } else if (enemy.type === "ram") {
-      const ram = this.library.model("siege-ram", region.accent);
-      ram.scale.setScalar(1.5);
+      const ram = this.library.model("unit-ram", region.accent, 0.04);
       ram.rotation.y = Math.PI;
       root.add(ram);
     } else if (enemy.type === "flyer") {
-      // 独立的丝翼机关鸢，不复用人形骨骼。它通过高度层越过城墙，是兵种能力而非穿模。
-      const metal = new THREE.MeshStandardMaterial({ color: 0x4d595d, metalness: 0.68, roughness: 0.34 });
-      const brass = new THREE.MeshStandardMaterial({ color: 0xa57b3f, metalness: 0.72, roughness: 0.3 });
-      const silk = new THREE.MeshStandardMaterial({ color: 0x745f52, roughness: 0.68, metalness: 0.03, side: THREE.DoubleSide });
-      const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.38, 1.35, 6, 12), metal);
-      body.rotation.x = Math.PI / 2;
-      body.position.y = 0.18;
-      body.castShadow = true;
-      root.add(body);
-      const wingShape = new THREE.Shape();
-      wingShape.moveTo(0, 0);
-      wingShape.lineTo(2.35, 0.48);
-      wingShape.lineTo(1.72, -0.62);
-      wingShape.lineTo(0.22, -0.28);
-      wingShape.closePath();
-      for (const side of [-1, 1]) {
-        const wing = new THREE.Mesh(new THREE.ShapeGeometry(wingShape), silk);
-        wing.scale.x = side;
-        wing.rotation.x = -Math.PI / 2;
-        wing.position.set(side * 0.1, 0.12, 0.1);
-        wing.castShadow = true;
-        root.add(wing);
-        const spar = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 2.4, 8), brass);
-        spar.rotation.z = Math.PI / 2 - side * 0.18;
-        spar.position.set(side * 1.05, 0.17, 0.05);
-        root.add(spar);
-      }
-      const rotor = new THREE.Group();
-      rotor.name = "flyer-rotor";
-      rotor.position.set(0, 0.28, 0.82);
-      for (const rotation of [0, Math.PI / 2]) {
-        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.04, 1.42), brass);
-        blade.rotation.y = rotation;
-        rotor.add(blade);
-      }
-      const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.22, 12), metal);
-      hub.rotation.x = Math.PI / 2;
-      rotor.add(hub);
-      root.add(rotor);
-      const tail = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.05, 8), silk);
-      tail.rotation.x = Math.PI / 2;
-      tail.position.set(0, 0.08, 1.42);
-      root.add(tail);
+      // 普通机关鸢与首领鸢群均为 Blender 输出的非人形机械实体。
+      root.add(this.library.model(enemy.bossKind === "kite-swarm" ? "unit-kite-swarm" : "unit-flyer", region.accent, 0.05));
     } else {
-      rig = this.library.character(enemyCharacterKind(enemy.type), region.accent);
+      const unitKind = enemy.bossKind === "shield-commander" || enemy.bossKind === "sapper-captain"
+        ? enemy.bossKind
+        : enemy.type;
+      rig = this.library.unit(unitKind);
       rig.setMoving(true);
       root.add(rig.root);
-      if (enemy.type === "shield") {
-        const shield = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.5, 0.5, 0.12, 10),
-          new THREE.MeshStandardMaterial({ color: 0x8b7359, roughness: 0.68, metalness: 0.28 })
-        );
-        shield.rotation.z = Math.PI / 2;
-        shield.position.set(-0.48, 1.05, 0.2);
-        shield.castShadow = true;
-        root.add(shield);
-      }
-      if (enemy.type === "sapper") {
-        const charge = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.34, 0.34, 0.82, 10),
-          new THREE.MeshStandardMaterial({ color: 0x7f3a2f, roughness: 0.65 })
-        );
-        charge.position.set(0, 0.92, -0.32);
-        charge.castShadow = true;
-        root.add(charge);
-      }
-      if (enemy.type === "archer") {
-        const bow = new THREE.Mesh(
-          new THREE.TorusGeometry(0.55, 0.035, 6, 14, Math.PI * 1.45),
-          new THREE.MeshStandardMaterial({ color: 0x85603d, roughness: 0.88 })
-        );
-        bow.position.set(0.5, 1.28, 0.15);
-        bow.rotation.y = Math.PI / 2;
-        bow.castShadow = true;
-        root.add(bow);
-      }
     }
-    if (enemy.bossKind) decorateBoss(root, enemy.bossKind, this.library, region.accent);
     const bossScale: Partial<Record<BossKind, number>> = {
-      "shield-commander": 1.38,
-      "sapper-captain": 1.32,
-      "kite-swarm": 1.22,
-      "siege-beast": 1.48
+      "shield-commander": 1.18,
+      "sapper-captain": 1.14,
+      "kite-swarm": 1.16,
+      "siege-beast": 1.08
     };
     const baseScale = enemy.bossKind ? bossScale[enemy.bossKind] ?? 1.36 : enemy.elite ? 1.22 : 1;
     root.scale.setScalar(baseScale);
@@ -5679,6 +5799,7 @@ function makeWindWornMound(
 
   private updateTowers(delta: number): void {
     if (!this.state) return;
+    const effectStacks = (effect: string, cap: number): number => Math.min(cap, this.state!.relics.filter((entry) => entry === effect).length);
     for (const building of this.state.buildings) {
       const definition = buildings[building.type];
       if (!definition.attack || !definition.range || building.hp <= 0) continue;
@@ -5706,22 +5827,22 @@ function makeWindWornMound(
         }
       }
       if (!nearest) continue;
-      const damageBoost = this.state.relics.filter((entry) => entry === "damage").length * 0.15
+      const damageBoost = effectStacks("damage", 5) * 0.12
         + (this.state.relics.includes("last-stand") && this.state.coreHp / this.state.coreMaxHp < 0.35 ? 0.25 : 0);
       const piercing = building.type === "ballista" && (nearest.type === "shield" || nearest.type === "ram")
         ? (this.state.relics.includes("pierce") ? 1.35 : 1) * (specialization === "pierce" ? 1.28 : 1)
         : 1;
-      const airRelics = this.state.relics.filter((entry) => entry === "air-damage").length;
+      const airRelics = effectStacks("air-damage", 3);
       const airMultiplier = building.type === "antiair" && nearest.type === "flyer" ? (specialization === "hunter" ? 2.25 : 1.8) * (1 + airRelics * 0.3) : 1;
       const siegeMultiplier = building.type === "trebuchet" && specialization === "siege" && (nearest.type === "ram" || nearest.type === "shield") ? 1.38 : 1;
-      const fireDamageStacks = this.state.relics.filter((entry) => entry === "fire-damage").length;
+      const fireDamageStacks = effectStacks("fire-damage", 3);
       const fireMultiplier = building.type === "fire"
         ? (specialization === "burn" ? 1.2 : 1) * (1 + fireDamageStacks * 0.25)
         : 1;
       const antiRanged = nearest.type === "archer" && this.state.relics.includes("anti-ranged") ? 1.3 : 1;
-      const bossDamage = nearest.bossKind ? 1 + this.state.relics.filter((entry) => entry === "boss-damage").length * 0.18 : 1;
+      const bossDamage = nearest.bossKind ? 1 + effectStacks("boss-damage", 1) * 0.18 : 1;
       const formationArmor = (nearest.protectedUntil ?? 0) > performance.now() ? 0.58 : 1;
-      const damage = definition.attack * building.level * (1 + damageBoost) * piercing * airMultiplier * siegeMultiplier * fireMultiplier * antiRanged * bossDamage * formationArmor;
+      const damage = definition.attack * weaponLevelPower(building.level) * (1 + damageBoost) * piercing * airMultiplier * siegeMultiplier * fireMultiplier * antiRanged * bossDamage * formationArmor;
       nearest.hp -= damage;
       nearest.targetedUntil = performance.now() + 650;
       if (building.type === "fire") {
@@ -5762,7 +5883,7 @@ function makeWindWornMound(
         for (const enemy of this.state.enemies) {
           if (enemy.id === nearest.id) continue;
           const visual = this.enemyObjects.get(enemy.id);
-          const blastRelics = this.state!.relics.filter((entry) => entry === "blast").length;
+          const blastRelics = effectStacks("blast", 3);
           const blastRange = (specialization === "shatter" ? 4.35 : 3.1) * (1 + blastRelics * 0.12);
           if (!visual || visual.object.position.distanceTo(target.object.position) > blastRange) continue;
           enemy.hp -= damage * 0.48;
@@ -5770,10 +5891,10 @@ function makeWindWornMound(
         }
         this.burst(target.object.position.clone().setY(1.2), 0x9f7e5d, 12);
       }
-      const rapidBonus = 1 + this.state.relics.filter((entry) => entry === "rapid").length * 0.08;
+      const rapidBonus = 1 + effectStacks("rapid", 5) * 0.065;
       const speedBonus = ((building.type === "ballista" && specialization === "watch") || (building.type === "antiair" && specialization === "volley") ? 1.18 : 1) * rapidBonus;
       const moduleSpeed = this.state.regionModule === "mechanism-emplacement" ? 1.1 : 1;
-      this.buildingCooldowns.set(building.id, (definition.cooldown ?? 1) / ((1 + building.level * 0.08) * speedBonus * moduleSpeed));
+      this.buildingCooldowns.set(building.id, (definition.cooldown ?? 1) / (weaponLevelRate(building.level) * speedBonus * moduleSpeed));
       this.sound.bolt();
     }
   }
@@ -6069,7 +6190,7 @@ function makeWindWornMound(
   }
 
   private clearChoices(): void {
-    for (const object of this.choiceObjects) this.world.remove(object);
+    for (const object of this.choiceObjects) this.removeWorldObject(object);
     this.choiceObjects = [];
     this.choiceLabels.forEach((label) => label.remove());
     this.choiceLabels = [];
@@ -6085,11 +6206,11 @@ function makeWindWornMound(
       this.selectedResourceId = null;
       if (this.relocation) this.cancelRelocation(false);
       if (this.preview) {
-        this.world.remove(this.preview);
+        this.removeWorldObject(this.preview);
         this.preview = undefined;
       }
       if (this.rangeIndicator) {
-        this.world.remove(this.rangeIndicator);
+        this.removeWorldObject(this.rangeIndicator);
         this.rangeIndicator = undefined;
       }
       this.hud.context.classList.add("is-hidden");
@@ -6097,12 +6218,20 @@ function makeWindWornMound(
       this.hud.coreBar.classList.add("is-choice-hidden");
       this.hud.buildingLabels.classList.add("is-choice-hidden");
       this.hud.hotbar.classList.add("is-choice-hidden");
+      this.hud.pauseButton.classList.add("is-choice-hidden");
+      this.hud.speed.classList.add("is-choice-hidden");
+      this.hud.endDay.classList.add("is-choice-hidden");
+      this.hud.autoDeploy.classList.add("is-choice-hidden");
       return;
     }
     this.hud.gateBar.classList.remove("is-choice-hidden");
     this.hud.coreBar.classList.remove("is-choice-hidden");
     this.hud.buildingLabels.classList.remove("is-choice-hidden");
     this.hud.hotbar.classList.remove("is-choice-hidden");
+    this.hud.pauseButton.classList.remove("is-choice-hidden");
+    this.hud.speed.classList.remove("is-choice-hidden");
+    this.hud.endDay.classList.remove("is-choice-hidden");
+    this.hud.autoDeploy.classList.remove("is-choice-hidden");
   }
 
   private nextEpoch(): void {
@@ -6164,7 +6293,7 @@ function makeWindWornMound(
       projectile.object.lookAt(projectile.to);
     }
     const finished = this.projectiles.filter((projectile) => projectile.progress >= 1);
-    finished.forEach((projectile) => this.world.remove(projectile.object));
+    finished.forEach((projectile) => this.removeWorldObject(projectile.object));
     this.projectiles = this.projectiles.filter((projectile) => projectile.progress < 1);
   }
 
@@ -6194,7 +6323,7 @@ function makeWindWornMound(
       particle.object.rotation.y += delta * 4;
     }
     const finished = this.particles.filter((particle) => particle.life <= 0);
-    finished.forEach((particle) => this.world.remove(particle.object));
+    finished.forEach((particle) => this.removeWorldObject(particle.object));
     this.particles = this.particles.filter((particle) => particle.life > 0);
   }
 
@@ -6213,7 +6342,7 @@ function makeWindWornMound(
       fallen.object.scale.setScalar(scale);
     }
     const finished = this.fallenVisuals.filter((fallen) => fallen.life <= 0);
-    finished.forEach((fallen) => this.world.remove(fallen.object));
+    finished.forEach((fallen) => this.removeWorldObject(fallen.object));
     this.fallenVisuals = this.fallenVisuals.filter((fallen) => fallen.life > 0);
   }
 
@@ -6425,6 +6554,8 @@ function makeWindWornMound(
       button.classList.toggle("is-unaffordable", !affordable);
     });
     for (const building of this.state.buildings) {
+      const expectedVisualState = `${building.level}:${building.specialization ?? "base"}:${building.hp <= 0 ? "destroyed" : building.hp / Math.max(1, building.maxHp) < 0.62 ? "damaged" : "intact"}`;
+      if (this.buildingObjects.get(building.id)?.userData.visualState !== expectedVisualState) this.refreshBuildingVisual(building);
       const label = this.buildingLabels.get(building.id);
       if (!label) continue;
       const level = label.querySelector("strong");

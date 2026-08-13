@@ -508,10 +508,34 @@ export function upgradeCost(type: BuildingType, level: number): Partial<Resource
   ) as Partial<Resources>;
 }
 
+/**
+ * Weapon levels remain useful forever, but no longer multiply damage linearly
+ * after level three. This prevents a mature battery from deleting every late
+ * wave at its spawn point while preserving clear early upgrade feedback.
+ */
+export function weaponLevelPower(level: number): number {
+  const safeLevel = Math.max(1, level);
+  return safeLevel <= 3 ? safeLevel : 3 + Math.pow(safeLevel - 3, 0.68) * 0.72;
+}
+
+/** Reload speed follows the same rule: strong early gains, gentle long tail. */
+export function weaponLevelRate(level: number): number {
+  const safeLevel = Math.max(1, level);
+  return 1 + Math.min(3, safeLevel) * 0.08 + Math.sqrt(Math.max(0, safeLevel - 3)) * 0.035;
+}
+
+/** Maximum-HP growth also tapers after the specialization milestone. */
+export function buildingDurabilityGrowth(currentLevel: number): number {
+  return currentLevel < 3 ? 1.28 : 1 + 0.16 / Math.sqrt(Math.max(1, currentLevel - 2));
+}
+
 export function directorWave(context: DirectorContext, region: RegionDefinition, streams: SeedStreams): EnemyType[] {
   const modeMultiplier = context.mode === "survival" ? 1.23 + Math.min(0.22, context.epoch * 0.008) : 1;
   const phasePressure = context.epoch <= 3 ? 0.84 : context.epoch <= 8 ? 1 : context.epoch <= 20 ? 1.1 : 1.22;
-  const budget = (4.2 + context.epoch * 2.25 + Math.pow(context.epoch, 1.22) * 0.34 + context.prosperity * 0.24 + context.defensePower * 0.075) * modeMultiplier * phasePressure;
+  // Prosperity and estimated DPS feed a bounded adaptive response. The director
+  // acknowledges a mature defence but never erases the benefit of upgrading it.
+  const adaptivePressure = 1 + Math.min(0.25, Math.max(0, context.prosperity - context.epoch * 0.75) * 0.008 + Math.max(0, context.defensePower - context.epoch * 6) * 0.0007);
+  const budget = (4.2 + context.epoch * 2.35 + Math.pow(context.epoch, 1.24) * 0.39 + context.prosperity * 0.24 + context.defensePower * 0.065) * modeMultiplier * phasePressure * adaptivePressure;
   const pool = region.threat.filter((type) => enemies[type].unlockEpoch <= context.epoch);
   const universal = (Object.keys(enemies) as EnemyType[]).filter((type) => enemies[type].unlockEpoch <= context.epoch);
   const choices = [...new Set([...pool, ...universal])];
@@ -529,7 +553,18 @@ export function directorWave(context: DirectorContext, region: RegionDefinition,
   if (context.epoch >= 4 && !wave.includes("archer")) wave.push("archer");
   if (context.epoch >= 4 && !wave.includes("flyer") && streams.next("combat") > 0.45) wave.push("flyer");
   if (context.epoch >= 5 && context.gateLevel >= 2 && !wave.includes("ram")) wave.push("ram");
-  return streams.shuffle("combat", wave);
+  // Late nights are tactical packages, not a longer queue of random fodder.
+  if (context.epoch >= 16) {
+    const packages: EnemyType[][] = [
+      ["shield", "shield", "sapper", "archer"],
+      ["shield", "ram", "archer", "sapper"],
+      ["flyer", "flyer", "archer", "looter"]
+    ];
+    wave.push(...streams.pick("combat", packages));
+  }
+  // Tactical packages replace excess fodder rather than pushing the active-unit
+  // budget beyond the mobile performance ceiling.
+  return streams.shuffle("combat", wave).slice(0, 60);
 }
 
 const bosses: BossKind[] = ["shield-commander", "sapper-captain", "kite-swarm", "siege-beast"];
@@ -550,7 +585,8 @@ export function bossEnemyType(kind: BossKind): EnemyType {
 /** 无上限生命曲线。前 3 夜保留教学余量，第 9 夜起迫使玩家依靠克制、布局与操作。 */
 export function enemyHealthScale(epoch: number, mode: GameMode): number {
   const night = Math.max(1, epoch);
-  const base = 1 + 0.11 * (night - 1) + 0.015 * Math.pow(night - 1, 1.55);
+  const latePressure = night <= 8 ? 0 : 0.053 * Math.pow(night - 8, 1.62);
+  const base = 1 + 0.11 * (night - 1) + 0.015 * Math.pow(night - 1, 1.55) + latePressure;
   return base * (mode === "survival" ? 1.08 + Math.min(0.18, night * 0.004) : 1);
 }
 

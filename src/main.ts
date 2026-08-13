@@ -47,7 +47,9 @@ async function boot(): Promise<void> {
     loadingProgress.style.width = "100%";
     const game = new SilkRoadGame(canvas, library);
     if (["localhost", "127.0.0.1"].includes(window.location.hostname)) {
-      (window as typeof window & { __silkRoadGame?: unknown }).__silkRoadGame = game;
+      // Define the local-only inspection hook explicitly so browser screenshot
+      // tests can audit world-space geometry without exposing it in production.
+      Object.defineProperty(window, "__silkRoadGame", { value: game, configurable: true });
     }
     game.showTitle();
     game.animate();

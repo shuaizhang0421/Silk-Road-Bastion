@@ -33,6 +33,8 @@ jobs:
         run: pnpm test:assets
       - name: Simulate endless balance
         run: pnpm test:sim
+      - name: Validate closed-loop difficulty policies
+        run: pnpm test:difficulty
       - name: Test save migration
         run: pnpm test:save
       - name: Test responsive UI contract
@@ -41,6 +43,16 @@ jobs:
         run: pnpm test:regions
       - name: Test onboarding flow
         run: pnpm test:onboarding
+      - name: Test model geometry contracts
+        run: pnpm test:geometry
+      - name: Test visual asset contracts
+        run: pnpm test:visual-assets
+      - name: Test audio contracts
+        run: pnpm test:audio
+      - name: Install screenshot browser
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Test responsive screenshots and scene geometry
+        run: pnpm test:e2e
       - name: Build static game
         run: pnpm build
       - name: Configure GitHub Pages

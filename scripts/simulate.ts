@@ -1,4 +1,4 @@
-import { bossForNight, buildings, canAfford, createGame, directorWave, emptyMeta, enemies, enemyHealthScale, pay, regionById, relics, SeedStreams } from "../src/data";
+import { bossForNight, buildings, canAfford, createGame, directorWave, emptyMeta, enemies, enemyHealthScale, pay, regionById, relics, SeedStreams, weaponLevelPower, weaponLevelRate } from "../src/data";
 import { canBuildInZone, fortLayout } from "../src/fort-layout";
 
 const seeds = Array.from({ length: 100 }, (_, index) => `SILK-${String(index + 1).padStart(3, "0")}`);
@@ -69,6 +69,10 @@ if (survivalLayout.zones.length !== 8) throw new Error("极限守城没有固定
 if (!survivalLayout.zones.some((zone) => zone.type === "logistics") || !survivalLayout.zones.some((zone) => zone.type === "defense")) {
   throw new Error("极限守城功能区缺少生产与防御取舍");
 }
+const survivalSiege = survivalLayout.zones.find((zone) => zone.type === "siege");
+if (!survivalSiege || !canBuildInZone("trebuchet", survivalSiege)) throw new Error("极限守城第六夜投石车没有合法攻城位");
+const expeditionSiege = fortLayout("expedition", 2, null).zones.find((zone) => zone.type === "siege");
+if (!expeditionSiege || !canBuildInZone("trebuchet", expeditionSiege)) throw new Error("远征第六夜没有同步开放投石机攻城位");
 if (enemyHealthScale(30, "expedition") <= enemyHealthScale(15, "expedition") * 1.35) throw new Error("敌军生命后期增长过缓或意外封顶");
 if (enemyHealthScale(15, "survival") <= enemyHealthScale(15, "expedition")) throw new Error("极限守城没有形成额外生命压力");
 
@@ -127,6 +131,22 @@ if (survivalEpochs !== 5000) throw new Error(`极限纪元数量错误: ${surviv
 if (mechanicEpoch > 3) throw new Error("敌军机制解锁过晚");
 if (totalLateEnemies <= totalEarlyEnemies) throw new Error("后期敌军组合没有形成进程性");
 if (survivalEnemyTotal <= expeditionEnemyTotal * 1.04) throw new Error("极限守城的总体敌军压力与无尽远征差异不足");
+
+// A level-17 reference battery must not erase a complete wave at spawn. This
+// estimate intentionally excludes travel and armour, so failing it indicates a
+// severe raw-DPS imbalance before the full time-step strategy model even runs.
+const night17Wave = directorWave({ epoch: 17, prosperity: 24, gateLevel: 7, defensePower: 230, recentDamage: 15, mode: "expedition" }, regionById("oasis"), new SeedStreams(createGame("expedition", "NIGHT-17-DPS", emptyMeta()).rng));
+const night17Health = night17Wave.reduce((total, type) => total + enemies[type].hp * enemyHealthScale(17, "expedition"), 0);
+const referenceBattery = [
+  { type: "ballista" as const, level: 6 }, { type: "ballista" as const, level: 5 },
+  { type: "fire" as const, level: 5 }, { type: "antiair" as const, level: 4 }
+];
+const referenceDps = referenceBattery.reduce((total, item) => {
+  const definition = buildings[item.type];
+  return total + (definition.attack ?? 0) * weaponLevelPower(item.level) * weaponLevelRate(item.level) / (definition.cooldown ?? 1);
+}, 0) * 1.42;
+const theoreticalKillTime = night17Health / Math.max(1, referenceDps);
+if (theoreticalKillTime < 34) throw new Error(`第17夜理论清场过快：${theoreticalKillTime.toFixed(1)} 秒`);
 
 const gateLevelTenMax = 260 + Array.from({ length: 9 }, (_, index) => 72 + Math.min(150, (index + 2) * 14)).reduce((sum, value) => sum + value, 0);
 const pressureWave = directorWave({ epoch: 20, prosperity: 28, gateLevel: 10, defensePower: 150, recentDamage: 20, mode: "expedition" }, regionById("canyon"), new SeedStreams(createGame("expedition", "GATE-PRESSURE", emptyMeta()).rng));
