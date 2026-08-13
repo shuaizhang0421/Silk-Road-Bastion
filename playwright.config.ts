@@ -7,7 +7,16 @@ export default defineConfig({
   // second, uncommitted set of screenshots even though the same Chromium scene
   // had already passed the canonical macOS review set.
   snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}-{projectName}-darwin{ext}",
-  timeout: 45_000,
+  // GitHub's Ubuntu runner renders Three.js through SwiftShader while the
+  // reviewed baselines use macOS Metal. CI still executes every scene and all
+  // DOM/world-space geometry assertions, but pixel snapshots remain a local
+  // four-viewport review gate where the renderer is deterministic.
+  ignoreSnapshots: Boolean(process.env.CI),
+  // A complete visual journey rebuilds the fort several times. It takes about
+  // 44 seconds on Metal and longer on GitHub's CPU-backed SwiftShader renderer.
+  // Keep a real upper bound without turning normal CI rendering into a false
+  // timeout failure.
+  timeout: 90_000,
   // WebGL edge anti-aliasing differs slightly across macOS GPU contexts and CI
   // software rendering. World-space geometry assertions catch structural regressions;
   // 3.5% keeps those hard failures while ignoring subpixel raster noise.
