@@ -116,7 +116,7 @@ test("首页、首日、院落几何和建造状态在目标视口稳定", async
   await freezeFrame(page);
   await expect(page).toHaveScreenshot("high-ground-module.png", { animations: "disabled" });
   await page.getByRole("button", { name: /丝路商栈/ }).click();
-  await expect(page.getByText(/选择发光的合法建造区域/)).toBeVisible();
+  await expect(page.getByText(/点击高亮位置/)).toBeVisible();
   await freezeFrame(page);
   await expect(page).toHaveScreenshot("build-mode.png", { animations: "disabled" });
 });

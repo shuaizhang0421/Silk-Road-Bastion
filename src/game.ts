@@ -80,6 +80,25 @@ const EXPEDITION_BUILD_ORDER: BuildingType[] = ["market", "workshop", "ballista"
 const SURVIVAL_BUILD_ORDER: BuildingType[] = ["granary", "market", "workshop", "barracks", "range", "engineerCamp", "infirmary", "ballista", "fire", "antiair", "trebuchet"];
 const ROAD_LANES = [-6.2, 0, 6.2];
 
+interface BuildFocusState {
+  previousFocus: THREE.Vector3;
+  previousDistance: number;
+  targetFocus: THREE.Vector3;
+  targetDistance: number;
+  recommendedPadIndex: number;
+  validPadIndices: number[];
+  restoring: boolean;
+}
+
+interface TutorialCoachState {
+  step: number;
+  total: number;
+  text: string;
+  icon: string;
+  targetBuilding?: BuildingType;
+  targetPadIndex?: number;
+}
+
 /** 远景专用的不规则岩脊，避免规则圆锥在俯视镜头中呈现成一排金字塔。 */
 function makeHorizonMound(material: THREE.MeshStandardMaterial, radiusX: number, radiusZ: number, height: number, seed: number, segments: number): THREE.Mesh {
   const vertices: number[] = [];
@@ -619,6 +638,9 @@ export class SilkRoadGame {
   private squadObjects = new Map<string, SquadVisual>();
   private guardNodeObjects = new Map<string, THREE.Group>();
   private survivalTab: "build" | "recruit" | "army" = "build";
+  private buildFocusState: BuildFocusState | null = null;
+  private bottomLayoutFrame = 0;
+  private uiResizeObserver?: ResizeObserver;
   private occluderMeshes: OccluderMesh[] = [];
   private occludedMeshes = new Set<THREE.Mesh>();
   private occlusionRefreshCooldown = 0;
@@ -652,6 +674,10 @@ export class SilkRoadGame {
     prompt: document.querySelector<HTMLElement>("#prompt")!,
     promptIcon: document.querySelector<HTMLElement>("#promptIcon")!,
     promptText: document.querySelector<HTMLElement>("#promptText")!,
+    tutorialCoach: document.querySelector<HTMLElement>("#tutorialCoach")!,
+    tutorialCoachStep: document.querySelector<HTMLElement>("#tutorialCoachStep")!,
+    tutorialCoachIcon: document.querySelector<HTMLElement>("#tutorialCoachIcon")!,
+    tutorialCoachText: document.querySelector<HTMLElement>("#tutorialCoachText")!,
     enemyArrow: document.querySelector<HTMLElement>("#enemyArrow")!,
     enemyCount: document.querySelector<HTMLElement>("#enemyCount")!,
     bossBar: document.querySelector<HTMLElement>("#bossBar")!,
@@ -756,6 +782,7 @@ export class SilkRoadGame {
     this.applyQuality();
     this.camera = new THREE.PerspectiveCamera(39, 1, 0.1, 180);
     this.bindEvents();
+    this.observeBottomUi();
     this.resize();
     this.renderHotbar();
     this.renderModelThumbnails();
@@ -821,6 +848,10 @@ export class SilkRoadGame {
     this.renderHotbar();
     this.renderModelThumbnails();
     this.buildWorld();
+    if (mode === "survival" && this.state.survival?.tutorialStep === 0) {
+      const target = this.tutorialPadIndex();
+      if (target >= 0) this.focusBuildZones([target], target);
+    }
     this.hud.start.classList.add("is-hidden");
     this.hud.gameOver.classList.add("is-hidden");
     this.hud.waveClear.classList.add("is-hidden");
@@ -834,7 +865,7 @@ export class SilkRoadGame {
     if (mode === "survival") {
       this.survivalTab = "build";
       this.renderSurvivalPanel();
-      this.setPrompt("ph-bowl-food", "驻军需要粮草：先建粮秣院，再建兵营训练刀盾营");
+      this.setPrompt("ph-hand-tap", "按下方引导建立粮草来源");
     } else {
       this.setPrompt("ph-storefront", "选择商栈后，后勤区会显示可用地基；建成后会持续产币");
     }
@@ -867,6 +898,10 @@ export class SilkRoadGame {
     this.applyQuality();
     this.meta = envelope.meta;
     this.mode = this.state.mode;
+    if (this.state.mode === "survival" && this.state.survival) {
+      const step = this.state.survival.tutorialStep;
+      this.survivalTab = step <= 1 ? "build" : step === 2 ? "recruit" : step <= 4 ? "army" : "build";
+    }
     this.streams = new SeedStreams(this.state.rng);
     this.running = true;
     this.paused = false;
@@ -886,6 +921,10 @@ export class SilkRoadGame {
       this.state.phaseTime = Math.max(6, this.state.dayLength * 0.5);
     }
     this.buildWorld();
+    if (this.mode === "survival" && this.state.survival && this.state.survival.tutorialStep < 2 && this.state.phase === "day") {
+      const target = this.tutorialPadIndex();
+      if (target >= 0) this.focusBuildZones([target], target);
+    }
     if (this.state.phase === "relic") {
       this.setChoiceUi(true);
       if (this.state.mode === "survival" && this.state.pendingChoices.some((id) => id.startsWith("doctrine:"))) {
@@ -959,6 +998,39 @@ export class SilkRoadGame {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height, false);
     this.layoutChoiceObjects();
+    if (this.buildFocusState && !this.buildFocusState.restoring) {
+      this.buildFocusState.targetDistance = this.buildFocusDistance();
+    }
+    this.scheduleBottomSafeArea();
+  }
+
+  private observeBottomUi(): void {
+    if (typeof ResizeObserver === "undefined") return;
+    this.uiResizeObserver = new ResizeObserver(() => this.scheduleBottomSafeArea());
+    this.uiResizeObserver.observe(this.hud.hotbar);
+    this.uiResizeObserver.observe(this.hud.garrisonPanel);
+    this.uiResizeObserver.observe(this.hud.garrisonContent);
+    this.uiResizeObserver.observe(this.hud.tutorialCoach);
+  }
+
+  private scheduleBottomSafeArea(): void {
+    if (this.bottomLayoutFrame) return;
+    this.bottomLayoutFrame = requestAnimationFrame(() => {
+      this.bottomLayoutFrame = 0;
+      const elements = [this.hud.hotbar, this.hud.garrisonPanel].filter((element) => {
+        const style = getComputedStyle(element);
+        return style.display !== "none" && !element.classList.contains("is-hidden") && element.getBoundingClientRect().height > 0;
+      });
+      const top = elements.length
+        ? Math.min(...elements.map((element) => element.getBoundingClientRect().top))
+        : window.innerHeight - 18;
+      const actionHeight = Math.max(0, Math.ceil(window.innerHeight - top));
+      const coachHeight = this.hud.tutorialCoach.classList.contains("is-hidden")
+        ? 0
+        : Math.ceil(this.hud.tutorialCoach.getBoundingClientRect().height);
+      this.hud.root.style.setProperty("--action-stack-height", `${actionHeight}px`);
+      this.hud.root.style.setProperty("--coach-height", `${coachHeight}px`);
+    });
   }
 
   private layoutChoiceObjects(): void {
@@ -986,6 +1058,48 @@ export class SilkRoadGame {
     this.cameraFocus.set(0, 1.25, -0.7);
   }
 
+  private buildFocusDistance(): number {
+    const aspect = (this.canvas.clientWidth || window.innerWidth) / Math.max(1, this.canvas.clientHeight || window.innerHeight);
+    const preferred = aspect < 0.82 ? 42 : aspect < 1.25 ? 37 : aspect > 1.9 ? 32 : 34;
+    const limits = this.cameraLimits();
+    return THREE.MathUtils.clamp(preferred, limits.min, limits.max);
+  }
+
+  private focusBuildZones(validPadIndices: number[], recommendedPadIndex: number): void {
+    if (!this.state || recommendedPadIndex < 0) return;
+    const zone = this.currentFortLayout().zones[recommendedPadIndex];
+    if (!zone) return;
+    const prior = this.buildFocusState;
+    const aspect = this.camera.aspect;
+    this.buildFocusState = {
+      previousFocus: prior?.previousFocus.clone() ?? this.cameraFocus.clone(),
+      previousDistance: prior?.previousDistance ?? this.cameraDistance,
+      targetFocus: new THREE.Vector3(zone.position.x, 1.1, zone.position.z + (aspect < 0.82 ? 4.5 : 2.7)),
+      targetDistance: this.buildFocusDistance(),
+      recommendedPadIndex,
+      validPadIndices: [...validPadIndices],
+      restoring: false
+    };
+    this.refreshBuildZoneVisibility();
+  }
+
+  private restoreBuildCamera(immediate = false): void {
+    const focus = this.buildFocusState;
+    if (!focus) return;
+    if (immediate) {
+      this.cameraFocus.copy(focus.previousFocus);
+      this.cameraDistance = focus.previousDistance;
+      this.buildFocusState = null;
+    } else {
+      focus.targetFocus.copy(focus.previousFocus);
+      focus.targetDistance = focus.previousDistance;
+      focus.restoring = true;
+      focus.recommendedPadIndex = -1;
+      focus.validPadIndices = [];
+    }
+    this.refreshBuildZoneVisibility();
+  }
+
   private changeCameraDistance(next: number): void {
     const { min, max } = this.cameraLimits();
     this.cameraDistance = THREE.MathUtils.clamp(next, min, max);
@@ -1010,6 +1124,7 @@ export class SilkRoadGame {
         this.hoveredPad = -1;
         this.refreshBuildZoneVisibility();
         this.updatePreview();
+        this.restoreBuildCamera();
       }
     });
     this.canvas.addEventListener("wheel", (event) => {
@@ -1084,6 +1199,11 @@ export class SilkRoadGame {
     this.hud.mobileAction.addEventListener("click", () => this.interact());
     this.hud.garrisonTabs.querySelectorAll<HTMLButtonElement>("[data-garrison-tab]").forEach((button) => {
       button.addEventListener("click", () => {
+        this.selectedBuild = null;
+        this.hoveredPad = -1;
+        this.updatePreview();
+        this.refreshBuildZoneVisibility();
+        this.restoreBuildCamera();
         this.survivalTab = button.dataset.garrisonTab as typeof this.survivalTab;
         this.renderSurvivalPanel();
       });
@@ -1225,6 +1345,7 @@ export class SilkRoadGame {
     this.preview = undefined;
     this.rangeIndicator = undefined;
     this.relocation = null;
+    this.buildFocusState = null;
     this.weatherParticles = undefined;
     this.sunLight = undefined;
     this.moonFillLight = undefined;
@@ -1245,6 +1366,7 @@ export class SilkRoadGame {
     this.selectedResourceId = null;
     this.placingFortification = false;
     this.hoveredPad = -1;
+    this.restoreBuildCamera(true);
     if (this.relocation) this.cancelRelocation(false);
     if (this.preview) {
       this.removeWorldObject(this.preview);
@@ -2399,28 +2521,51 @@ export class SilkRoadGame {
         emissive: region.accent,
         emissiveIntensity: isTutorialTarget ? 0.48 : 0.16,
         transparent: true,
-        opacity: 0.34,
+        opacity: 0.5,
         roughness: 0.6,
         metalness: 0.16,
         depthWrite: false
       });
       const marker = new THREE.Group();
       marker.name = "build-zone-marker";
-      // Build mode uses a hollow four-corner outline, never a filled slab. This keeps
-      // legal placement obvious without leaving two brown rectangles in the fort.
+      marker.userData.padIndex = index;
+      // 临时标记由砂岩边框、木定位桩、地面微光和锤形标识组成。它只在教学、
+      // 建造或迁移时出现，不会在院内留下常驻圆台或棋盘格。
       const outlineWidth = size - 0.34;
       const outlineDepth = zone.type === "siege" ? 4.78 : 3.82;
-      const cornerLength = Math.min(0.92, outlineWidth * 0.24);
-      const lineWidth = 0.09;
+      const cornerLength = Math.min(1.18, outlineWidth * 0.29);
+      const lineWidth = 0.16;
+      const glowMaterial = zoneMaterial.clone();
+      glowMaterial.opacity = 0.1;
+      const glow = new THREE.Mesh(new THREE.PlaneGeometry(outlineWidth - 0.18, outlineDepth - 0.18), glowMaterial);
+      glow.name = "build-zone-glow";
+      glow.rotation.x = -Math.PI / 2;
+      glow.position.y = 0.096;
+      marker.add(glow);
       for (const x of [-1, 1]) {
         for (const z of [-1, 1]) {
-          const horizontal = new THREE.Mesh(new THREE.BoxGeometry(cornerLength, 0.045, lineWidth), zoneMaterial);
-          horizontal.position.set(x * (outlineWidth * 0.5 - cornerLength * 0.5), 0.105, z * outlineDepth * 0.5);
-          const vertical = new THREE.Mesh(new THREE.BoxGeometry(lineWidth, 0.045, cornerLength), zoneMaterial);
-          vertical.position.set(x * outlineWidth * 0.5, 0.105, z * (outlineDepth * 0.5 - cornerLength * 0.5));
-          marker.add(horizontal, vertical);
+          const horizontal = new THREE.Mesh(new THREE.BoxGeometry(cornerLength, 0.075, lineWidth), zoneMaterial);
+          horizontal.position.set(x * (outlineWidth * 0.5 - cornerLength * 0.5), 0.13, z * outlineDepth * 0.5);
+          const vertical = new THREE.Mesh(new THREE.BoxGeometry(lineWidth, 0.075, cornerLength), zoneMaterial);
+          vertical.position.set(x * outlineWidth * 0.5, 0.13, z * (outlineDepth * 0.5 - cornerLength * 0.5));
+          const stake = new THREE.Mesh(
+            new THREE.BoxGeometry(0.17, 0.48, 0.17),
+            new THREE.MeshStandardMaterial({ color: 0x765034, roughness: 0.92 })
+          );
+          stake.name = "build-zone-stake";
+          stake.position.set(x * outlineWidth * 0.5, 0.31, z * outlineDepth * 0.5);
+          marker.add(horizontal, vertical, stake);
         }
       }
+      const hammer = new THREE.Group();
+      hammer.name = "build-zone-hammer";
+      const handle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.82, 0.12), zoneMaterial);
+      const head = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.18, 0.18), zoneMaterial);
+      head.position.y = 0.38;
+      hammer.add(handle, head);
+      hammer.position.set(0, 0.42, 0);
+      hammer.rotation.z = -0.62;
+      marker.add(hammer);
       marker.traverse((child) => {
         if (child instanceof THREE.Mesh) child.raycast = () => undefined;
       });
@@ -2428,6 +2573,7 @@ export class SilkRoadGame {
       pad.add(marker);
       pad.userData.zoneMarker = marker;
       pad.userData.zoneMaterial = zoneMaterial;
+      pad.userData.zoneGlowMaterial = glowMaterial;
       // Newly unlocked sockets are explained by the reorganisation prompt and
       // appear as corner outlines only after the player picks a building. A
       // permanent scaffold here looked like a broken wall floating in the yard.
@@ -2486,9 +2632,13 @@ export class SilkRoadGame {
     if (!this.state) return -1;
     if (this.state.mode === "survival" && this.state.survival && this.state.survival.tutorialStep < 2) {
       const expected: BuildingType = this.state.survival.tutorialStep === 0 ? "granary" : "barracks";
-      return this.currentFortLayout().zones.findIndex((zone, index) =>
-        canBuildInZone(expected, zone) && !this.state!.buildings.some((building) => building.padIndex === index)
-      );
+      const preferredId = expected === "granary" ? "stores-west" : "drill-yard-center";
+      const zones = this.currentFortLayout().zones;
+      const preferred = zones.findIndex((zone, index) => zone.id === preferredId
+        && canBuildInZone(expected, zone)
+        && !this.state!.buildings.some((building) => building.padIndex === index));
+      return preferred >= 0 ? preferred : zones.findIndex((zone, index) =>
+        canBuildInZone(expected, zone) && !this.state!.buildings.some((building) => building.padIndex === index));
     }
     if (this.meta.seenTutorial) return -1;
     if (this.state.tutorialStep === 0) return 4;
@@ -2520,6 +2670,7 @@ export class SilkRoadGame {
     this.buildPads.forEach((pad, index) => {
       const marker = pad.userData.zoneMarker as THREE.Group | undefined;
       const material = pad.userData.zoneMaterial as THREE.MeshStandardMaterial | undefined;
+      const glowMaterial = pad.userData.zoneGlowMaterial as THREE.MeshStandardMaterial | undefined;
       const zone = layout.zones[index];
       if (!material || !marker || !zone) return;
       const accent = regionById(this.state?.regionId ?? "oasis").accent;
@@ -2530,12 +2681,20 @@ export class SilkRoadGame {
       // Showing them as beige pads made the courtyard look unfinished and could be
       // mistaken for buildings. They only appear while the player is actually
       // building, relocating, or following the one active tutorial prompt.
-      marker.visible = index === target || Boolean(activeType && valid);
-      const color = activeType ? (valid ? 0x58b98c : 0xbd5a49) : accent;
+      const recommended = index === target || this.buildFocusState?.recommendedPadIndex === index;
+      marker.visible = recommended || Boolean(activeType && valid);
+      const color = recommended ? 0xe3b458 : activeType ? (valid ? 0x62c8a0 : 0xbd5a49) : accent;
       material.color.set(color);
       material.emissive.set(color);
-      material.emissiveIntensity = index === target ? 0.5 : valid ? 0.3 : expansionPad ? 0.18 : 0.08;
-      material.opacity = activeType ? (valid ? 0.46 : 0.26) : 0;
+      material.emissiveIntensity = recommended ? 0.68 : valid ? 0.38 : expansionPad ? 0.18 : 0.08;
+      material.opacity = recommended ? 0.78 : activeType ? (valid ? 0.58 : 0.3) : 0;
+      if (glowMaterial) {
+        glowMaterial.color.set(color);
+        glowMaterial.emissive.set(color);
+        glowMaterial.emissiveIntensity = recommended ? 0.4 : 0.18;
+        glowMaterial.opacity = recommended ? 0.18 : valid ? 0.1 : 0;
+      }
+      marker.userData.recommended = recommended;
     });
   }
 
@@ -3205,6 +3364,7 @@ function makeWindWornMound(
     });
     if (survivalOnboarding) {
       this.renderSurvivalPanel();
+      this.updateTutorialCoach();
       return;
     }
     const fortify = document.createElement("button");
@@ -3223,6 +3383,7 @@ function makeWindWornMound(
     fortify.addEventListener("click", () => this.fortifyRoad());
     this.hud.hotbar.appendChild(fortify);
     this.renderSurvivalPanel();
+    this.updateTutorialCoach();
   }
 
   private buildOrder(): BuildingType[] {
@@ -3232,15 +3393,26 @@ function makeWindWornMound(
   private renderSurvivalPanel(): void {
     const survival = this.state?.mode === "survival" ? this.state.survival : null;
     this.hud.garrisonPanel.classList.toggle("is-hidden", !survival);
+    this.scheduleBottomSafeArea();
     if (!survival) {
       this.hud.hotbar.classList.remove("is-garrison-hidden");
       return;
     }
+    const onboarding = survival.tutorialStep < 5;
+    const requiredTab: typeof this.survivalTab = survival.tutorialStep <= 1 ? "build" : survival.tutorialStep === 2 ? "recruit" : "army";
+    const readyToStart = onboarding && survival.tutorialStep === 4;
+    if (onboarding && this.survivalTab !== requiredTab) this.survivalTab = requiredTab;
+    this.hud.garrisonPanel.classList.toggle("is-hidden", readyToStart);
+    this.hud.garrisonPanel.classList.toggle("is-onboarding", onboarding);
     this.hud.garrisonTabs.querySelectorAll<HTMLButtonElement>("[data-garrison-tab]").forEach((button) => {
+      const tab = button.dataset.garrisonTab as typeof this.survivalTab;
       button.classList.toggle("is-active", button.dataset.garrisonTab === this.survivalTab);
+      button.classList.toggle("is-tutorial-hidden", onboarding && tab !== requiredTab);
+      button.disabled = onboarding && tab !== requiredTab;
     });
-    this.hud.hotbar.classList.toggle("is-garrison-hidden", this.survivalTab !== "build");
+    this.hud.hotbar.classList.toggle("is-garrison-hidden", readyToStart || this.survivalTab !== "build");
     this.hud.garrisonContent.innerHTML = "";
+    if (readyToStart) return;
     if (this.survivalTab === "build") return;
     if (this.survivalTab === "recruit") {
       if (survival.populationCap < 24) {
@@ -3786,8 +3958,17 @@ function makeWindWornMound(
     this.updatePreview();
     this.refreshBuildZoneVisibility();
     if (this.selectedBuild) {
-      this.setPrompt(definition.icon, `${definition.name}：${definition.purpose}。选择发光的合法建造区域`);
+      const validPads = compatible
+        .map(({ index }) => index)
+        .filter((index) => !this.state!.buildings.some((building) => building.padIndex === index));
+      const tutorialTarget = this.tutorialPadIndex();
+      const recommended = validPads.includes(tutorialTarget) ? tutorialTarget : validPads[0] ?? -1;
+      this.focusBuildZones(validPads, recommended);
+      this.setPrompt(definition.icon, `已选 ${definition.name} · 点击高亮位置`);
+    } else {
+      this.restoreBuildCamera();
     }
+    this.updateTutorialCoach();
   }
 
   private handlePointerMove(event: PointerEvent): void {
@@ -4083,6 +4264,7 @@ function makeWindWornMound(
     this.selectedBuild = null;
     this.hoveredPad = -1;
     this.updatePreview();
+    this.restoreBuildCamera();
     this.sound.build();
     this.burst(this.zonePosition(padIndex).setY(1), regionById(this.state.regionId).accent, 12);
     if (this.state.survival && type === "granary" && this.state.survival.tutorialStep === 0) {
@@ -4090,13 +4272,13 @@ function makeWindWornMound(
       this.survivalTab = "build";
       this.renderHotbar();
       this.renderModelThumbnails();
-      this.setPrompt("ph-shield", "粮草开始生产。现在在军事区建造镇戍兵营");
+      this.setPrompt("ph-check-circle", "粮草生产已启动");
     } else if (this.state.survival && type === "barracks" && this.state.survival.tutorialStep <= 1) {
       this.state.survival.tutorialStep = 2;
       this.survivalTab = "recruit";
       this.renderHotbar();
       this.renderModelThumbnails();
-      this.setPrompt("ph-users-three", "兵营已就绪。打开招募，训练第一支刀盾营");
+      this.setPrompt("ph-check-circle", "兵营已就绪");
     } else if (this.state.tutorialStep === 0 && type === "market") {
       this.state.tutorialStep = 1;
       this.refreshTutorialPads();
@@ -4112,6 +4294,8 @@ function makeWindWornMound(
     } else {
       this.setPrompt(definition.icon, `${definition.name}建成，点击建筑可以升级`);
     }
+    this.updateTutorialCoach();
+    this.scheduleBottomSafeArea();
     this.updateHud(true);
     this.save();
   }
@@ -4408,6 +4592,11 @@ function makeWindWornMound(
     this.hud.context.classList.add("is-hidden");
     this.refreshBuildZoneVisibility();
     this.updatePreview();
+    const validPads = this.currentFortLayout().zones
+      .map((zone, index) => ({ zone, index }))
+      .filter(({ zone, index }) => canBuildInZone(building.type, zone) && !this.state!.buildings.some((entry) => entry.padIndex === index && entry.id !== building.id))
+      .map(({ index }) => index);
+    this.focusBuildZones(validPads, validPads[0] ?? building.padIndex);
     this.setPrompt("ph-arrows-out-cardinal", `迁移${buildings[building.type].name}：绿色位置可放置，右键取消`);
   }
 
@@ -4437,6 +4626,7 @@ function makeWindWornMound(
     this.hoveredPad = -1;
     this.updatePreview();
     this.refreshBuildZoneVisibility();
+    this.restoreBuildCamera();
     this.sound.build();
     this.setPrompt("ph-arrows-out-cardinal", `${buildings[building.type].name}已迁移，等级和耐久保持不变`);
     this.selectBuilding(building.id);
@@ -4452,6 +4642,7 @@ function makeWindWornMound(
     this.hoveredPad = -1;
     this.updatePreview();
     this.refreshBuildZoneVisibility();
+    this.restoreBuildCamera();
     if (reselect) this.selectBuilding(id);
   }
 
@@ -5361,6 +5552,18 @@ function makeWindWornMound(
   private updateCamera(delta: number): void {
     if (!this.playerRig) return;
     const playerPosition = this.playerRig.root.position;
+    if (this.buildFocusState) {
+      const focusState = this.buildFocusState;
+      this.cameraFocus.lerp(focusState.targetFocus, 1 - Math.pow(0.0012, delta));
+      this.cameraDistance = THREE.MathUtils.damp(this.cameraDistance, focusState.targetDistance, 7.5, delta);
+      if (focusState.restoring
+        && this.cameraFocus.distanceToSquared(focusState.targetFocus) < 0.0025
+        && Math.abs(this.cameraDistance - focusState.targetDistance) < 0.08) {
+        this.cameraFocus.copy(focusState.targetFocus);
+        this.cameraDistance = focusState.targetDistance;
+        this.buildFocusState = null;
+      }
+    } else {
     // 院内保持稳定的守城视轴；走到城外后更积极跟随，避免左/右侧角色被城墙和植被挤到视野边缘。
     const outsideFort = this.state?.mode !== "training" && !this.isInsideFort(playerPosition);
     // 院内保持基地总览；出城后采用安全区跟随。角色在安全区内移动不推镜头，
@@ -5375,6 +5578,7 @@ function makeWindWornMound(
     } else {
       const stableBase = new THREE.Vector3(playerPosition.x * 0.12, 1.25, -0.9 + playerPosition.z * 0.08);
       this.cameraFocus.lerp(stableBase, 1 - Math.pow(0.006, delta));
+    }
     }
     const focus = this.cameraFocus;
     const desired = new THREE.Vector3(
@@ -5509,6 +5713,11 @@ function makeWindWornMound(
       } else if (object.name === "fortification-signal") {
         object.rotation.y += animationDelta * 1.4;
         object.position.y = 5.62 + Math.sin(elapsed * 2.3 + object.id) * 0.16;
+      } else if (object.name === "build-zone-marker" && object.userData.recommended) {
+        const pulse = 1 + Math.sin(elapsed * 4.1 + object.id) * 0.045;
+        object.scale.set(pulse, 1, pulse);
+        const hammer = object.getObjectByName("build-zone-hammer");
+        if (hammer) hammer.position.y = 0.42 + Math.sin(elapsed * 4.1 + object.id) * 0.11;
       } else if (object.name === "flyer-rotor") {
         object.rotation.y += animationDelta * 13;
       } else if (object.name.startsWith("boss-")) {
@@ -5721,7 +5930,7 @@ function makeWindWornMound(
       this.createSquadVisual(squad);
       survival.tutorialStep = Math.max(survival.tutorialStep, 3);
       this.sound.horn();
-      this.setPrompt(definition.icon, `${definition.name}训练完成。打开“军队”，选择小队并部署到驻守点`);
+      this.setPrompt(definition.icon, `${definition.name}训练完成`);
     }
     this.renderSurvivalPanel();
     this.save();
@@ -7290,6 +7499,41 @@ function makeWindWornMound(
     }
   }
 
+  private tutorialCoachState(): TutorialCoachState | null {
+    if (!this.state?.survival || this.state.mode !== "survival" || this.state.phase !== "day" || this.state.survival.tutorialStep >= 5) return null;
+    const step = this.state.survival.tutorialStep;
+    if (step === 0) return this.selectedBuild === "granary"
+      ? { step: 2, total: 6, text: "点击高亮后勤位", icon: "ph-map-pin", targetBuilding: "granary", targetPadIndex: this.tutorialPadIndex() }
+      : { step: 1, total: 6, text: "选择粮秣院", icon: "ph-bowl-food", targetBuilding: "granary", targetPadIndex: this.tutorialPadIndex() };
+    if (step === 1) return {
+      step: 3,
+      total: 6,
+      text: this.selectedBuild === "barracks" ? "点击高亮军事位" : "建造兵营",
+      icon: this.selectedBuild === "barracks" ? "ph-map-pin" : "ph-shield-chevron",
+      targetBuilding: "barracks",
+      targetPadIndex: this.tutorialPadIndex()
+    };
+    if (step === 2) return { step: 4, total: 6, text: "训练刀盾营", icon: "ph-users-three" };
+    if (step === 3) return { step: 5, total: 6, text: "部署到门前", icon: "ph-map-trifold" };
+    return { step: 6, total: 6, text: "开始第一夜", icon: "ph-moon-stars" };
+  }
+
+  private updateTutorialCoach(): void {
+    const coach = this.tutorialCoachState();
+    const visible = Boolean(coach);
+    this.hud.tutorialCoach.classList.toggle("is-hidden", !visible);
+    this.hud.root.classList.toggle("has-tutorial-coach", visible);
+    this.hud.endDay.classList.toggle("is-tutorial-target", coach?.step === 6);
+    if (coach) {
+      this.hud.tutorialCoachStep.textContent = `驻军教学 ${coach.step}/${coach.total}`;
+      this.hud.tutorialCoachIcon.className = `ph ${coach.icon}`;
+      this.hud.tutorialCoachText.textContent = coach.text;
+      this.hud.tutorialCoach.dataset.targetBuilding = coach.targetBuilding ?? "";
+      this.hud.tutorialCoach.dataset.targetPad = String(coach.targetPadIndex ?? -1);
+    }
+    this.scheduleBottomSafeArea();
+  }
+
   private updateHud(force = false): void {
     if (!this.state) return;
     const phaseNames = {
@@ -7314,18 +7558,9 @@ function makeWindWornMound(
             ? "防线已就绪：点击月亮，开始第一夜"
           : null
       : null;
-    const survivalTutorial = this.state.mode === "survival" && this.state.phase === "day" && (this.state.survival?.tutorialStep ?? 5) < 5
-      ? this.state.survival!.tutorialStep === 0
-        ? "第一步：在后勤区建造粮秣院，建立驻军粮草来源"
-        : this.state.survival!.tutorialStep === 1
-          ? "第二步：在军事区建造镇戍兵营"
-          : this.state.survival!.tutorialStep === 2
-            ? "第三步：打开招募，训练第一支刀盾营"
-            : this.state.survival!.tutorialStep === 3
-              ? "第四步：打开军队，选择刀盾营并部署到发光驻守点"
-              : "防线已就绪：点击月亮，开始第一夜"
-      : null;
+    const survivalTutorial = this.tutorialCoachState() ? "驻军教学" : null;
     const tutorialObjective = expeditionTutorial ?? survivalTutorial;
+    this.updateTutorialCoach();
     this.hud.playerRoleName.textContent = this.state.mode === "survival" ? "驻军将领" : "丝路行者";
     this.hud.skill.title = this.state.mode === "survival" ? "集结号令：强化附近小队" : "使用战技";
     this.hud.skill.innerHTML = this.state.mode === "survival"

@@ -1,7 +1,7 @@
 {
   "name": "silk-road-bastion-3d",
   "private": true,
-  "version": "0.9.0-playtest",
+  "version": "0.9.1-playtest",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",

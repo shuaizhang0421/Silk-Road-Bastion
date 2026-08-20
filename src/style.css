@@ -271,7 +271,14 @@ button:focus-visible, input:focus-visible {
 .seed-row input::placeholder { color: #82958c; }
 .records { position: absolute; right: max(24px, 5vw); bottom: max(24px, 5vh); color: rgba(235, 225, 199, 0.82); font-size: 11px; text-align: right; line-height: 1.75; text-shadow: 0 2px 12px rgba(0,0,0,.6); }
 
-.hud { position: absolute; inset: 0; z-index: 10; pointer-events: none; }
+.hud {
+  --action-stack-height: 100px;
+  --coach-height: 0px;
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
 .audio-panel { position: absolute; right: 18px; top: 61px; z-index: 15; display: grid; gap: 8px; width: 190px; padding: 10px; border: 1px solid var(--edge); border-radius: 12px; background: rgba(13, 42, 43, .93); box-shadow: 0 14px 34px rgba(0, 0, 0, .25); pointer-events: auto; }
 .audio-panel label { display: grid; grid-template-columns: 34px 1fr; align-items: center; gap: 8px; color: #c9d3c6; font-size: 10px; font-weight: 800; }
 .audio-panel input { accent-color: #e0aa50; }
@@ -530,6 +537,51 @@ button:focus-visible, input:focus-visible {
 }
 .prompt i { color: #e0aa50; font-size: 16px; }
 .prompt span { font-size: 10px; font-weight: 700; }
+.tutorial-coach {
+  position: absolute;
+  z-index: 12;
+  left: 50%;
+  bottom: calc(var(--action-stack-height) + 8px);
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 7px;
+  width: max-content;
+  max-width: min(390px, calc(100vw - 24px));
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid rgba(226, 173, 85, .56);
+  border-radius: 11px;
+  background: linear-gradient(180deg, rgba(23, 57, 55, .96), rgba(10, 32, 34, .96));
+  box-shadow: 0 10px 28px rgba(5, 18, 20, .34), inset 0 1px rgba(255,255,255,.06);
+  color: #eee1c2;
+  transform: translateX(-50%);
+  transition: bottom 160ms ease, opacity 140ms ease;
+}
+.tutorial-coach > span {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: rgba(226,173,85,.14);
+  color: #dfb760;
+  font-size: 8px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.tutorial-coach > i { color: #edbf63; font-size: 18px; }
+.tutorial-coach > strong { font-size: 10px; white-space: nowrap; }
+.top-actions button.is-tutorial-target {
+  border-color: #efc264;
+  color: #ffdc87;
+  box-shadow: 0 0 0 2px rgba(226,173,85,.2), 0 0 18px rgba(226,173,85,.34);
+  animation: tutorial-target-pulse 1.25s ease-in-out infinite;
+}
+@keyframes tutorial-target-pulse {
+  50% { transform: translateY(-1px) scale(1.05); box-shadow: 0 0 0 4px rgba(226,173,85,.08), 0 0 24px rgba(226,173,85,.45); }
+}
+.hud.has-tutorial-coach .prompt {
+  bottom: calc(var(--action-stack-height) + var(--coach-height) + 16px);
+  max-width: min(320px, calc(100vw - 24px));
+}
 
 .enemy-arrow {
   position: absolute;
@@ -649,6 +701,8 @@ button:focus-visible, input:focus-visible {
 }
 .garrison-panel nav button:last-child { border-right: 0; }
 .garrison-panel nav button.is-active { background: #315f59; color: #f0d18b; }
+.garrison-panel.is-onboarding nav { grid-template-columns: 1fr; width: min(170px, 100%); }
+.garrison-panel nav button.is-tutorial-hidden { display: none; }
 #garrisonContent:not(:empty) {
   display: flex;
   gap: 6px;
@@ -1021,6 +1075,8 @@ button:focus-visible, input:focus-visible {
   .build-slot small, .cost-chip.is-compact { font-size: 7px; line-height: 12px; }
   .build-slot .cost-chip .cost-token { flex-basis: 9px; width: 9px; height: 9px; }
   .prompt { bottom: 78px; }
+  .tutorial-coach { min-height: 34px; padding: 5px 8px; }
+  .tutorial-coach > strong { font-size: 9px; }
   .world-bar { top: 110px; }
   .start-screen { padding: 20px 14px; }
   .title-lockup p { left: 18px; top: 22px; }
@@ -1100,6 +1156,9 @@ button:focus-visible, input:focus-visible {
   .build-slot small, .cost-chip.is-compact { font-size: 6px; line-height: 11px; }
   .prompt { bottom: 88px; min-height: 29px; padding: 5px 8px; }
   .prompt span { font-size: 9px; }
+  .tutorial-coach { max-width: calc(100vw - 16px); gap: 5px; }
+  .tutorial-coach > span { padding-inline: 4px; font-size: 7px; }
+  .tutorial-coach > i { font-size: 16px; }
   .context-menu {
     grid-template-columns: repeat(5, minmax(42px, 1fr));
     gap: 5px;
@@ -1156,6 +1215,7 @@ button:focus-visible, input:focus-visible {
   .build-slot .cost-chip .cost-token { flex-basis: 8px; width: 8px; height: 8px; }
   .prompt { bottom: 78px; min-height: 30px; padding: 5px 8px; }
   .prompt span { font-size: 9px; }
+  .tutorial-coach { min-height: 30px; padding: 4px 7px; }
   .world-bar { top: 86px; }
   .boss-bar { top: 59px; width: min(280px, 36vw); padding-block: 4px 5px; }
   .choice-label { width: min(112px, 14vw); min-width: 0; padding: 6px; }
