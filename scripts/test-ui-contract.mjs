@@ -14,6 +14,19 @@ for (const resource of resources) {
   if (!css.includes(`.${resource}-token`)) throw new Error(`样式表缺少 ${resource} 实物图标`);
 }
 
+for (const id of ["foodValue", "populationValue", "garrisonPanel", "garrisonTabs", "garrisonContent"]) {
+  if (!html.includes(`id="${id}"`)) throw new Error(`驻军经营界面缺少：${id}`);
+}
+for (const tab of ["build", "recruit", "army"]) {
+  if (!html.includes(`data-garrison-tab="${tab}"`)) throw new Error(`驻军界面缺少 ${tab} 分页`);
+}
+if (!css.includes(".garrison-panel") || !css.includes(".garrison-card") || !css.includes(".garrison-only")) {
+  throw new Error("驻军面板、卡片或粮草人口 HUD 缺少多端样式");
+}
+if (!game.includes("queueSquadTraining") || !game.includes("updateTrainingQueues") || !game.includes("refreshGuardNodeVisibility")) {
+  throw new Error("招募、训练或驻守节点没有接入游戏流程");
+}
+
 if (!game.includes("resource-token cost-token ${key}-token")) {
   throw new Error("建造、升级与修理没有复用资源栏的统一图标生成器");
 }

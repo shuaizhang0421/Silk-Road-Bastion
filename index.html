@@ -29,7 +29,7 @@
         </div>
           <div class="menu-deck">
             <div class="deck-heading">
-              <div><span id="modeKicker">守商路，逐夜扩建</span><mark>本地验收 v0.8.1</mark></div>
+              <div><span id="modeKicker">守商路，逐夜扩建</span><mark>本地验收 v0.9.0</mark></div>
             <small id="modeDescription">从一座小驿站出发，每 3 夜开辟新的防线。</small>
           </div>
         <div class="start-actions">
@@ -41,7 +41,7 @@
           </button>
           <div class="mode-switch" role="group" aria-label="游戏模式">
             <button class="mode-btn is-active" data-mode="expedition" type="button"><i class="ph ph-map-trifold" aria-hidden="true"></i><span><b>无尽远征</b><small>每 3 夜迁营并扩建驿站</small></span></button>
-            <button class="mode-btn" data-mode="survival" type="button"><i class="ph ph-castle-turret" aria-hidden="true"></i><span><b>极限守城</b><small>固定城池，敌军战术高压</small></span></button>
+            <button class="mode-btn" data-mode="survival" type="button"><i class="ph ph-castle-turret" aria-hidden="true"></i><span><b>极限守城</b><small>经营驻军，练兵布阵守城</small></span></button>
             <button class="mode-btn mode-btn--coming" type="button" disabled aria-label="行者历练，后续开放"><i class="ph ph-sword" aria-hidden="true"></i><span><b>行者历练</b><small>后续开放</small></span></button>
           </div>
           <div id="saveSlots" class="save-slots" aria-label="本地存档位"></div>
@@ -60,7 +60,7 @@
         <div class="player-hud">
           <div class="portrait"><i class="ph ph-person-simple-run"></i></div>
           <div class="vitals">
-            <strong>丝路行者</strong>
+            <strong id="playerRoleName">丝路行者</strong>
             <div class="meter hp"><i id="playerHpFill"></i></div>
           </div>
           <button id="skillBtn" class="skill-button" title="使用战技" type="button">
@@ -83,6 +83,8 @@
           <span title="木材"><i class="resource-token wood-token" aria-hidden="true"></i><b id="woodValue">0</b><small id="woodRate">+0</small></span>
           <span title="石料"><i class="resource-token stone-token" aria-hidden="true"></i><b id="stoneValue">0</b><small id="stoneRate">+0</small></span>
           <span title="机巧"><i class="resource-token gear-token" aria-hidden="true"></i><b id="gearValue">0</b><small id="gearRate">+0</small></span>
+          <span class="garrison-only" title="粮草"><i class="ph ph-bowl-food" aria-hidden="true"></i><b id="foodValue">0</b><small id="foodRate">+0</small></span>
+          <span class="garrison-only" title="驻军人口"><i class="ph ph-users-three" aria-hidden="true"></i><b id="populationValue">0/12</b></span>
         </div>
 
         <div id="gateWorldBar" class="world-bar gate-bar">
@@ -166,6 +168,14 @@
         </section>
 
         <div id="hotbar" class="hotbar" aria-label="建造快捷栏"></div>
+        <section id="garrisonPanel" class="garrison-panel is-hidden" aria-label="驻军经营面板">
+          <nav id="garrisonTabs" aria-label="极限守城功能">
+            <button type="button" data-garrison-tab="build" class="is-active"><i class="ph ph-hammer"></i><span>建造</span></button>
+            <button type="button" data-garrison-tab="recruit"><i class="ph ph-shield"></i><span>招募</span></button>
+            <button type="button" data-garrison-tab="army"><i class="ph ph-users-three"></i><span>军队</span></button>
+          </nav>
+          <div id="garrisonContent"></div>
+        </section>
         <div id="buildingLabels" class="building-labels"></div>
         <div id="choiceLabels" class="choice-labels"></div>
 

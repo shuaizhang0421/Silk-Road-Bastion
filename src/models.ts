@@ -11,7 +11,7 @@ const RUNTIME_VILLAGE_ROOT = "./assets/models/runtime";
 
 type CharacterKind = "ranger" | "raider" | "brute";
 export type UnitVisualKind = "player" | "raider" | "shield" | "sapper" | "looter" | "archer" | "shield-commander" | "sapper-captain";
-type MaterialSurface = "stone" | "wood" | "iron" | "sand";
+type MaterialSurface = "stone" | "wood" | "iron" | "sand" | "cloth";
 
 const UNIT_SIGNATURE_PART: Record<UnitVisualKind, string> = {
   player: "traveller spear",
@@ -1583,10 +1583,93 @@ export function makeBuildModel(type: BuildingType, library: AssetLibrary, region
     wrapper.add(makeFireTower(library, region.accent));
   } else if (type === "market") {
     wrapper.add(makeMarket(region, library));
-  } else {
+  } else if (type === "workshop") {
     wrapper.add(makeWorkshop(region, library));
+  } else {
+    wrapper.add(makeGarrisonBuilding(type, library, region));
   }
   return wrapper;
+}
+
+/** Fixed-footprint garrison buildings. Each is a complete structure rather than
+ * a stretched asset shell so LOD swaps and mobile rendering keep the same size. */
+function makeGarrisonBuilding(type: BuildingType, library: AssetLibrary, region: RegionDefinition): THREE.Group {
+  const group = new THREE.Group();
+  const stone = region.id === "canyon" ? 0x80503e : region.id === "mist" ? 0x53655f : 0x8a745b;
+  const timber = region.id === "mist" ? 0x354a48 : 0x62432e;
+  const cloth = type === "infirmary" ? 0xd0c3a2 : type === "barracks" ? 0x7a3f35 : region.accent;
+  const addBox = (name: string, size: [number, number, number], position: [number, number, number], color: number, surface: MaterialSurface = "stone") => {
+    const part = mesh(new THREE.BoxGeometry(...size), color, position, [0, 0, 0], surface);
+    part.name = name;
+    group.add(part);
+    return part;
+  };
+  addBox("foundation", [5.8, 0.36, 4.7], [0, 0.18, 0], stone);
+
+  if (type === "range") {
+    addBox("rear-wall", [5.5, 2.3, 0.34], [0, 1.32, -2.0], stone);
+    for (const x of [-2.5, 2.5]) addBox("range-post", [0.24, 2.5, 0.24], [x, 1.55, 1.75], timber, "wood");
+    const canopy = addBox("roof", [5.7, 0.2, 2.0], [0, 2.72, 1.0], cloth, "cloth");
+    canopy.rotation.x = -0.09;
+    for (const x of [-1.55, 0, 1.55]) {
+      const target = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.18, 16), material(0xb88a54, 0.92));
+      target.rotation.x = Math.PI / 2;
+      target.position.set(x, 1.12, -1.76);
+      target.castShadow = true;
+      group.add(target);
+    }
+  } else {
+    addBox("body", [5.25, 2.75, 3.95], [0, 1.62, -0.12], stone);
+    addBox("entrance-left", [1.55, 2.25, 0.28], [-1.82, 1.35, 1.92], timber, "wood");
+    addBox("entrance-right", [1.55, 2.25, 0.28], [1.82, 1.35, 1.92], timber, "wood");
+    addBox("lintel", [5.05, 0.32, 0.34], [0, 2.54, 1.92], timber, "wood");
+    const roof = new THREE.Group();
+    roof.name = "roof";
+    for (const side of [-1, 1]) {
+      const slope = new THREE.Mesh(new THREE.BoxGeometry(5.85, 0.18, 2.72), material(type === "granary" ? 0x8d5f36 : cloth, 0.86));
+      slope.position.set(0, 3.42, side * 1.17);
+      slope.rotation.x = side * 0.28;
+      slope.castShadow = true;
+      roof.add(slope);
+    }
+    const ridge = new THREE.Mesh(new THREE.BoxGeometry(6, 0.22, 0.28), material(timber, 0.9));
+    ridge.position.y = 3.8;
+    ridge.castShadow = true;
+    roof.add(ridge);
+    group.add(roof);
+  }
+
+  if (type === "granary") {
+    for (const x of [-1.45, 0, 1.45]) {
+      const sack = new THREE.Mesh(new THREE.CapsuleGeometry(0.35, 0.48, 4, 8), material(0xa98657, 0.98));
+      sack.position.set(x, 0.72, 2.15);
+      sack.castShadow = true;
+      group.add(sack);
+    }
+  } else if (type === "barracks") {
+    for (const x of [-1.7, 1.7]) {
+      const rack = addBox("weapon-rack", [1.15, 1.5, 0.18], [x, 1.05, 2.2], timber, "wood");
+      rack.rotation.z = x < 0 ? -0.05 : 0.05;
+    }
+  } else if (type === "engineerCamp") {
+    for (const [x, scale] of [[-1.25, 0.48], [0, 0.62], [1.3, 0.4]] as const) {
+      const gear = new THREE.Mesh(new THREE.TorusGeometry(scale, 0.11, 8, 18), material(region.accent, 0.42, 0.52));
+      gear.position.set(x, 1.45, 2.12);
+      gear.castShadow = true;
+      group.add(gear);
+    }
+  } else if (type === "infirmary") {
+    for (const x of [-1.35, 1.35]) {
+      addBox("cot", [1.05, 0.32, 2.3], [x, 0.58, 0.25], 0x76533c, "wood");
+      addBox("blanket", [0.9, 0.08, 1.55], [x, 0.78, 0.1], 0xb8aa86, "cloth");
+    }
+    const sign = new THREE.Mesh(new THREE.OctahedronGeometry(0.32, 0), material(0x75a88d, 0.58));
+    sign.position.set(0, 3.05, 2.12);
+    sign.scale.y = 1.5;
+    group.add(sign);
+  }
+  group.userData.garrisonBuilding = type;
+  return group;
 }
 
 /**
@@ -1622,7 +1705,7 @@ export function applyBuildingVisualState(root: THREE.Group, building: BuildingSt
   }
   if (building.level >= 3) {
     const badge = new THREE.Mesh(new THREE.OctahedronGeometry(0.24, 0), accent);
-    badge.position.set(0, building.type === "market" || building.type === "workshop" ? 3.45 : 2.35, 0.8);
+    badge.position.set(0, ["market", "workshop", "granary", "barracks", "range", "engineerCamp", "infirmary"].includes(building.type) ? 4.25 : 2.35, 0.8);
     badge.scale.y = 1.35;
     badge.name = `specialization-${building.specialization ?? "default"}`;
     state.add(badge);

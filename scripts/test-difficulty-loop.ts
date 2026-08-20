@@ -49,7 +49,8 @@ function unlocked(type: BuildingType, night: number): boolean {
 }
 
 function capacity(mode: GameMode, night: number): number {
-  if (mode === "survival") return 8;
+  // 驻军极限守城由 test-garrison-loop.ts 的粮草、人口、训练、伤员模型单独验证。
+  if (mode === "survival") return 12;
   return night < 3 ? 6 : night < 6 ? 8 : night < 9 ? 10 : 12;
 }
 
@@ -237,15 +238,12 @@ function simulate(seed: string, mode: GameMode, policy: Policy): Outcome {
 
 const seeds = Array.from({ length: 100 }, (_, index) => `LOOP-${index + 1}`);
 const results = new Map<string, Outcome[]>();
-for (const mode of ["expedition", "survival"] as const) {
-  for (const policy of ["novice", "standard", "optimized"] as const) {
-    results.set(`${mode}-${policy}`, seeds.map((seed) => simulate(`${seed}-${mode}-${policy}`, mode, policy)));
-  }
+for (const policy of ["novice", "standard", "optimized"] as const) {
+  results.set(`expedition-${policy}`, seeds.map((seed) => simulate(`${seed}-expedition-${policy}`, "expedition", policy)));
 }
 
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
 const expeditionNovice = median(results.get("expedition-novice")!.map((entry) => entry.failedAt));
-const survivalNovice = median(results.get("survival-novice")!.map((entry) => entry.failedAt));
 const expeditionStandard = median(results.get("expedition-standard")!.map((entry) => entry.failedAt));
 const optimized = median(results.get("expedition-optimized")!.map((entry) => entry.failedAt));
 const night17 = results.get("expedition-standard")!;
@@ -255,13 +253,12 @@ const medianGateDamage = median(night17.map((entry) => entry.night17GateDamage).
 const medianRepairSpend = median(night17.map((entry) => entry.repairSpend));
 const referenceNight17Defence = night17.find((entry) => entry.night17Defence)?.night17Defence ?? "未抵达";
 
-console.log(JSON.stringify({ expeditionNovice, survivalNovice, expeditionStandard, optimized, medianNight17, medianSpawnKill, medianGateDamage, medianRepairSpend, referenceNight17Defence }, null, 2));
+console.log(JSON.stringify({ expeditionNovice, expeditionStandard, optimized, medianNight17, medianSpawnKill, medianGateDamage, medianRepairSpend, referenceNight17Defence }, null, 2));
 if (expeditionNovice < 8 || expeditionNovice > 14) throw new Error(`远征新手中位失败夜不合理：${expeditionNovice}`);
-if (survivalNovice >= expeditionNovice || survivalNovice < 5) throw new Error(`极限新手压力未形成：远征 ${expeditionNovice} / 极限 ${survivalNovice}`);
 if (expeditionStandard < 15 || expeditionStandard > 26) throw new Error(`熟练玩家中位失败夜不合理：${expeditionStandard}`);
 if (optimized <= expeditionStandard) throw new Error(`优化布局没有延长生存：${optimized} <= ${expeditionStandard}`);
 if (medianNight17 < 42 || medianNight17 > 78) throw new Error(`第17夜时长未落入目标区间：${medianNight17.toFixed(1)} 秒`);
 if (medianSpawnKill > 0.25) throw new Error(`第17夜出生即死比例过高：${Math.round(medianSpawnKill * 100)}%`);
 if (medianGateDamage < 35) throw new Error(`第17夜防线没有形成维修压力：城门仅损失 ${medianGateDamage.toFixed(0)}`);
 
-console.log(`闭环难度通过：新手远征中位 ${expeditionNovice} 夜、极限 ${survivalNovice} 夜，熟练 ${expeditionStandard} 夜、优化 ${optimized} 夜；第17夜 ${medianNight17.toFixed(1)} 秒，出生即死 ${Math.round(medianSpawnKill * 100)}%，城门损失 ${medianGateDamage.toFixed(0)}。`);
+console.log(`远征闭环难度通过：新手中位 ${expeditionNovice} 夜、熟练 ${expeditionStandard} 夜、优化 ${optimized} 夜；第17夜 ${medianNight17.toFixed(1)} 秒，出生即死 ${Math.round(medianSpawnKill * 100)}%，城门损失 ${medianGateDamage.toFixed(0)}。驻军难度由独立闭环验证。`);

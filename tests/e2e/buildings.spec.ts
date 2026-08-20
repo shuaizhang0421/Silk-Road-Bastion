@@ -105,7 +105,7 @@ test("六类建筑升级、专精、受损、维修、迁移、回收和续档�
   expect(restored.states.every((state: string) => state.endsWith(":intact"))).toBe(true);
 });
 
-test("极限守城新档显示建造栏且第六夜投石车拥有合法位置", async ({ page }) => {
+test("驻军极限守城新档显示十二个功能区且投石车拥有合法位置", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("button", { name: /新建随机世界/ })).toBeVisible({ timeout: 30_000 });
   const result = await page.evaluate(async () => {
@@ -130,6 +130,6 @@ test("极限守城新档显示建造栏且第六夜投石车拥有合法位置",
       built: game.state.buildings.length === before + 1 && game.state.buildings.some((entry: any) => entry.type === "trebuchet" && entry.padIndex === siegeIndex)
     };
   });
-  expect(result).toEqual({ hotbarHidden: false, choicePhase: false, zoneCount: 8, siegeIndex: 7, button: true, built: true });
+  expect(result).toEqual({ hotbarHidden: false, choicePhase: false, zoneCount: 12, siegeIndex: 3, button: true, built: true });
   await expect(page.getByLabel("建造快捷栏")).toBeVisible();
 });

@@ -2,16 +2,30 @@ export type GameMode = "expedition" | "survival" | "training";
 export type GamePhase = "day" | "night" | "clear" | "relic" | "route" | "adventure" | "adventure-choice" | "gameover";
 export type HeroClass = "guardian" | "ranger" | "artificer";
 export type AdventureRoomKind = "camp" | "caravan" | "ruin" | "elite" | "boss";
-export type BuildingType = "ballista" | "fire" | "market" | "workshop" | "antiair" | "trebuchet";
+export type AdventureRouteNodeKind = "battle" | "camp" | "elite" | "merchant" | "event" | "boss";
+export type EquipmentSlot = "weapon" | "armor" | "trinket" | "module";
+export type AdventureRarity = "common" | "rare" | "legendary";
+export type BuildingType =
+  | "ballista" | "fire" | "market" | "workshop" | "antiair" | "trebuchet"
+  | "granary" | "barracks" | "range" | "engineerCamp" | "infirmary";
 export type EnemyType = "raider" | "shield" | "sapper" | "looter" | "archer" | "flyer" | "ram";
 export type ResourceKey = "coin" | "wood" | "stone" | "gear";
-export type EnemyTargetType = "gate" | "core" | "building" | "player";
+export type EnemyTargetType = "gate" | "core" | "building" | "player" | "squad";
+export type SquadType = "shield" | "spear" | "archer" | "engineer";
+export type SquadCommand = "hold" | "focus" | "retreat";
+export type SquadSpecialization =
+  | "iron-wall" | "counterattack"
+  | "brace" | "sweep"
+  | "piercing-volley" | "fire-volley"
+  | "field-repair" | "anti-air";
+export type GuardNodeKind = "outer" | "flank" | "inner" | "courtyard" | "core" | "wall";
+export type DispatchKind = "scout" | "escort" | "salvage";
 export type RelicCategory = "trade" | "production" | "defense" | "weapon" | "exploration" | "survival";
 export type RelicRarity = "common" | "rare" | "legendary";
 export type BossKind = "shield-commander" | "sapper-captain" | "kite-swarm" | "siege-beast";
 export type RegionModule = "high-ground" | "side-gate" | "caravan-yard" | "mechanism-emplacement";
 export type QualityTier = "auto" | "low" | "medium" | "high";
-export type BuildZoneType = "defense" | "courtyard" | "logistics" | "siege";
+export type BuildZoneType = "defense" | "courtyard" | "logistics" | "military" | "siege";
 export type BossAction = "advance" | "formation" | "shockwave" | "plant-charge" | "detonate" | "split" | "dive" | "charge" | "recover";
 export type WeatherKind = RegionDefinition["weather"];
 
@@ -164,6 +178,106 @@ export interface EnemyState {
   bossSkillCooldown: number;
   bossTelegraphUntil: number;
   protectedUntil?: number;
+}
+
+export interface SquadState {
+  id: string;
+  type: SquadType;
+  memberHp: number[];
+  wounded: number;
+  /** Vacant positions caused by permanent casualties; replenishment refills these slots. */
+  fallen: number;
+  level: number;
+  experience: number;
+  specialization: SquadSpecialization | null;
+  guardNodeId: string;
+  command: SquadCommand;
+  focusEnemyId: string | null;
+  attackCooldown: number;
+  ultimateCooldown: number;
+  drilledEpoch: number;
+  dispatched: boolean;
+  fatigue: number;
+}
+
+export interface TrainingQueueEntry {
+  id: string;
+  buildingId: string;
+  squadType: SquadType;
+  remaining: number;
+  duration: number;
+}
+
+export interface GuardNodeDefinition {
+  id: string;
+  kind: GuardNodeKind;
+  position: Vec2;
+  rotation: number;
+  capacity: number;
+  allowed: SquadType[];
+  lane: number | null;
+}
+
+export interface DispatchMission {
+  id: string;
+  kind: DispatchKind;
+  squadId: string;
+  risk: number;
+  returnEpoch: number;
+  reward: Partial<Resources> & { food?: number };
+}
+
+export interface DoctrineStack {
+  id: string;
+  stacks: number;
+}
+
+export interface SurvivalState {
+  food: number;
+  foodCap: number;
+  populationCap: number;
+  squads: SquadState[];
+  trainingQueue: TrainingQueueEntry[];
+  dispatch: DispatchMission | null;
+  doctrineStacks: DoctrineStack[];
+  recentDoctrineChoices: string[];
+  pendingDoctrineChoices: string[];
+  selectedSquadId: string | null;
+  commanderCooldown: number;
+  commanderAuraUntil: number;
+  tutorialStep: number;
+  casualties: number;
+  woundedRecovered: number;
+}
+
+export interface SquadDefinition {
+  type: SquadType;
+  name: string;
+  icon: string;
+  role: string;
+  description: string;
+  unlockEpoch: number;
+  maxMemberHp: number;
+  damage: number;
+  range: number;
+  cooldown: number;
+  moveSpeed: number;
+  trainingTime: number;
+  population: number;
+  cost: Partial<Resources> & { food: number };
+  specializations: [SquadSpecialization, SquadSpecialization];
+}
+
+export interface DoctrineDefinition {
+  id: string;
+  name: string;
+  icon: string;
+  text: string;
+  rarity: RelicRarity;
+  maxStacks: number;
+  squadType?: SquadType;
+  requiresBuilding?: BuildingType;
+  effect: string;
 }
 
 export interface BossDefinition {
@@ -377,6 +491,67 @@ export interface AdventureState {
   skillCooldown: number;
   gear: string[];
   choices: string[];
+  chapter: number;
+  routeNodeId: string;
+  route: AdventureRouteNode[];
+  equipment: Partial<Record<EquipmentSlot, string>>;
+  skillStacks: Array<{ id: string; stacks: number }>;
+  currency: number;
+  healingCharges: number;
+  bossId: string;
+}
+
+export interface AdventureRouteNode {
+  id: string;
+  depth: number;
+  kind: AdventureRouteNodeKind;
+  next: string[];
+  danger: 1 | 2 | 3 | 4 | 5;
+  rewardTags: string[];
+}
+
+export interface AdventureHeroDefinition {
+  id: HeroClass;
+  name: string;
+  role: string;
+  weapon: string;
+  maxHp: number;
+  attack: number;
+  attackRange: number;
+  moveSpeed: number;
+  dodgeCooldown: number;
+  skillName: string;
+  skillDescription: string;
+  startingEquipment: string;
+}
+
+export interface AdventureEquipmentDefinition {
+  id: string;
+  name: string;
+  slot: EquipmentSlot;
+  rarity: AdventureRarity;
+  hero?: HeroClass;
+  tags: string[];
+  effect: string;
+}
+
+export interface AdventureSkillDefinition {
+  id: string;
+  name: string;
+  hero: HeroClass;
+  rarity: AdventureRarity;
+  maxStacks: number;
+  tags: string[];
+  effect: string;
+}
+
+export interface AdventureBossDefinition {
+  id: string;
+  name: string;
+  chapter: number;
+  phases: readonly [string, string];
+  counterTags: string[];
+  rewardTag: string;
 }
 
 export interface NightModifier {
@@ -456,7 +631,7 @@ export interface EnemyDefinition {
 }
 
 export interface GameState {
-  version: 7;
+  version: 8;
   mode: GameMode;
   seed: string;
   rng: RngState;
@@ -506,10 +681,11 @@ export interface GameState {
   weatherPhase: number;
   fortifications: FortificationState[];
   adventure: AdventureState | null;
+  survival: SurvivalState | null;
 }
 
 export interface MetaProgress {
-  version: 7;
+  version: 8;
   renown: number;
   records: Record<GameMode, number>;
   prosperityRecords: Record<"expedition" | "survival", number>;
@@ -521,7 +697,7 @@ export interface MetaProgress {
 
 export interface SaveEnvelope {
   schema: "silk-road-bastion";
-  version: 7;
+  version: 8;
   savedAt: number;
   run: GameState | null;
   meta: MetaProgress;

@@ -10,6 +10,11 @@ const DEFENSE: BuildingType[] = ["ballista", "fire", "antiair"];
 const COURTYARD: BuildingType[] = ["ballista", "fire", "antiair", "market", "workshop"];
 const LOGISTICS: BuildingType[] = ["market", "workshop"];
 const SIEGE: BuildingType[] = ["trebuchet", "ballista", "antiair"];
+const SURVIVAL_DEFENSE: BuildingType[] = ["ballista", "fire", "antiair"];
+const SURVIVAL_SIEGE: BuildingType[] = ["trebuchet", "ballista", "antiair"];
+const SURVIVAL_MILITARY: BuildingType[] = ["barracks", "range", "engineerCamp", "infirmary"];
+const SURVIVAL_LOGISTICS: BuildingType[] = ["market", "workshop", "granary"];
+const SURVIVAL_FLEX: BuildingType[] = [...SURVIVAL_MILITARY, ...SURVIVAL_LOGISTICS, "ballista", "fire", "antiair"];
 
 function zone(
   id: string,
@@ -48,12 +53,18 @@ const EXPEDITION_ZONES: BuildZoneDefinition[] = [
 ];
 
 const SURVIVAL_ZONES: BuildZoneDefinition[] = [
-  ...EXPEDITION_ZONES.slice(0, 6),
-  zone("fixed-rampart", "defense", -18.1, -5.5, 0, DEFENSE, [-1, 0], 0.15, 0.08),
-  // The eighth fixed socket is the survival mode's only heavy emplacement.
-  // It accepts early ranged weapons, then the trebuchet from night six onward,
-  // without increasing the fixed eight-zone capacity.
-  zone("fixed-siege-yard", "siege", 17.1, 5.7, 0, SIEGE, [0, 1], -0.08, 0.08)
+  zone("garrison-gate-west", "defense", -8.6, -8.2, 0, SURVIVAL_DEFENSE, [-1, 0], 0.08, 0.08),
+  zone("garrison-gate-east", "defense", 8.6, -8.2, 0, SURVIVAL_DEFENSE, [0, 1], -0.08, 0.08),
+  zone("garrison-rampart", "defense", -19.1, -4.8, 0, SURVIVAL_DEFENSE, [-1, 0], 0.14, 0.08),
+  zone("garrison-siege", "siege", 19.1, -1.8, 0, SURVIVAL_SIEGE, [0, 1], -0.1, 0.08),
+  zone("drill-yard-west", "military", -13.5, 3.4, 0, SURVIVAL_MILITARY, [], 0.04),
+  zone("drill-yard-center", "military", 0, 4.2, 0, SURVIVAL_MILITARY, [], 0),
+  zone("drill-yard-east", "military", 13.5, 3.4, 0, SURVIVAL_MILITARY, [], -0.04),
+  zone("stores-west", "logistics", -13.2, 15.8, 0, SURVIVAL_LOGISTICS, [], 0),
+  zone("stores-center", "logistics", 0, 16.8, 0, SURVIVAL_LOGISTICS, [], 0),
+  zone("stores-east", "logistics", 13.2, 15.8, 0, SURVIVAL_LOGISTICS, [], 0),
+  zone("flex-west", "courtyard", -7.3, 9.7, 0, SURVIVAL_FLEX, [-1, 0], 0.04),
+  zone("flex-east", "courtyard", 7.3, 9.7, 0, SURVIVAL_FLEX, [0, 1], -0.04)
 ];
 
 export function fortLayout(
@@ -93,10 +104,10 @@ export function fortLayout(
 
   return {
     id: `${mode}-${expansion}-${module ?? "standard"}`,
-    width: mode === "survival" ? 42 : 34 + Math.min(2, expansion) * 8,
+    width: mode === "survival" ? 48 : 34 + Math.min(2, expansion) * 8,
     // Depth is the rear wall z coordinate. The first two expansions grow sideways;
     // only the final caravan yard extends the rear logistics court.
-    depth: mode === "expedition" && expansion >= 3 ? 28 : 18,
+    depth: mode === "survival" ? 26 : mode === "expedition" && expansion >= 3 ? 28 : 18,
     expansionLevel: expansion,
     zones
   };

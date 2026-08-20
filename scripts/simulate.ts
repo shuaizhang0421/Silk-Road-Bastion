@@ -1,5 +1,6 @@
 import { bossForNight, buildings, canAfford, createGame, directorWave, emptyMeta, enemies, enemyHealthScale, pay, regionById, relics, SeedStreams, weaponLevelPower, weaponLevelRate } from "../src/data";
 import { canBuildInZone, fortLayout } from "../src/fort-layout";
+import { doctrines, squadDefinitions, survivalGuardNodes } from "../src/survival";
 
 const seeds = Array.from({ length: 100 }, (_, index) => `SILK-${String(index + 1).padStart(3, "0")}`);
 let generatedEpochs = 0;
@@ -42,6 +43,10 @@ const training = createGame("training", "TRAINING-MODE", emptyMeta(), "ranger");
 if (survival.mode !== "survival" || training.adventure?.attackRange !== 11.5 || training.adventure.moveSpeed <= 8) {
   throw new Error("模式或行者初始属性不正确");
 }
+if (!survival.survival || survival.survival.food !== 20 || survival.dayLength !== 25) throw new Error("驻军极限守城初始化失败");
+if (doctrines.length < 40 || Object.keys(squadDefinitions).length !== 4 || survivalGuardNodes.length < 10) {
+  throw new Error("驻军军令、小队或驻守节点定义不完整");
+}
 
 if (relics.length < 60) throw new Error(`奖励池不足：当前只有 ${relics.length} 项`);
 const buildingSpecificEffects = new Map([
@@ -65,9 +70,11 @@ for (const [level, expected] of [[0, 6], [1, 8], [2, 10], [3, 12]] as const) {
   }
 }
 const survivalLayout = fortLayout("survival", 3, null);
-if (survivalLayout.zones.length !== 8) throw new Error("极限守城没有固定为 8 处功能区");
-if (!survivalLayout.zones.some((zone) => zone.type === "logistics") || !survivalLayout.zones.some((zone) => zone.type === "defense")) {
-  throw new Error("极限守城功能区缺少生产与防御取舍");
+if (survivalLayout.zones.length !== 12) throw new Error("驻军极限守城没有固定为 12 处功能区");
+if (survivalLayout.zones.filter((zone) => zone.type === "logistics").length !== 3
+  || survivalLayout.zones.filter((zone) => zone.type === "military").length !== 3
+  || survivalLayout.zones.filter((zone) => zone.type === "defense").length !== 3) {
+  throw new Error("驻军极限守城功能区缺少生产、练兵与防御取舍");
 }
 const survivalSiege = survivalLayout.zones.find((zone) => zone.type === "siege");
 if (!survivalSiege || !canBuildInZone("trebuchet", survivalSiege)) throw new Error("极限守城第六夜投石车没有合法攻城位");

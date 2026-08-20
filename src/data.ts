@@ -18,10 +18,13 @@ import type {
   Resources,
   RngState
 } from "./types";
+import { createSurvivalState } from "./survival";
+import { createAdventureState } from "./adventure";
 
-export const SAVE_KEY = "silk-road-bastion:v7";
-export const PREVIOUS_SAVE_KEY = "silk-road-bastion:v6";
-export const ASSET_VERSION = "sr-assets-2026.08-v3-runtime-glb";
+export const SAVE_KEY = "silk-road-bastion:v8";
+export const PREVIOUS_SAVE_KEY = "silk-road-bastion:v7";
+export const LEGACY_SURVIVAL_KEY = "silk-road-bastion:v7:legacy-survival";
+export const ASSET_VERSION = "sr-assets-2026.08-v4-garrison";
 
 export const qualityPresets: Record<"low" | "medium" | "high", QualityPreset> = {
   low: { tier: "low", pixelRatio: 0.9, shadows: false, shadowMapSize: 512, weatherParticles: 32, sceneryDensity: 0.55, maxVisibleHealthBars: 4 },
@@ -237,6 +240,31 @@ export const buildings: Record<BuildingType, BuildingDefinition> = {
     purpose: "每 3 秒轮流生产木材、石料和机巧，受损时暂停",
     cost: { coin: 12, stone: 7 },
     maxHp: 150
+  },
+  granary: {
+    type: "granary", name: "粮秣院", icon: "ph-bowl-food", role: "生产粮草",
+    purpose: "每 3 秒生产粮草并提高储备上限，是驻军训练和治疗的基础",
+    cost: { coin: 8, wood: 6, stone: 3 }, maxHp: 142
+  },
+  barracks: {
+    type: "barracks", name: "镇戍兵营", icon: "ph-shield", role: "训练步军",
+    purpose: "训练刀盾营和长枪营，并为步军提供操练场",
+    cost: { coin: 12, wood: 8, stone: 5 }, maxHp: 170
+  },
+  range: {
+    type: "range", name: "弓弩射圃", icon: "ph-crosshair", role: "训练远程",
+    purpose: "训练弓弩营，升级后提高远程驻军的训练效率",
+    cost: { coin: 14, wood: 9, stone: 3 }, maxHp: 142
+  },
+  engineerCamp: {
+    type: "engineerCamp", name: "机关军营", icon: "ph-gear-six", role: "训练机关兵",
+    purpose: "训练机关兵，并支援拒马、维修和防空",
+    cost: { coin: 18, wood: 6, stone: 5, gear: 4 }, maxHp: 156
+  },
+  infirmary: {
+    type: "infirmary", name: "军医营", icon: "ph-first-aid", role: "治疗伤员",
+    purpose: "提高战后重伤存活率，并消耗粮草与钱币恢复伤员",
+    cost: { coin: 12, wood: 6, stone: 4 }, maxHp: 138
   }
 };
 
@@ -405,7 +433,7 @@ export function makeRngState(seed: string): RngState {
 
 export function emptyMeta(): MetaProgress {
   return {
-    version: 7,
+    version: 8,
     renown: 0,
     records: { expedition: 0, survival: 0, training: 0 },
     prosperityRecords: { expedition: 0, survival: 0 },
@@ -423,14 +451,14 @@ export function createGame(mode: GameMode, seedInput: string, meta: MetaProgress
   const available = regions.filter((region) => meta.unlockedRegions.includes(region.id));
   const region = streams.pick("region", available);
   return {
-    version: 7,
+    version: 8,
     mode,
     seed,
     rng,
     epoch: 1,
     phase: "day",
-    phaseTime: 20,
-    dayLength: 20,
+    phaseTime: mode === "survival" ? 25 : 20,
+    dayLength: mode === "survival" ? 25 : 20,
     regionId: region.id,
     resources: { coin: 30, wood: 18, stone: 14, gear: 3 },
     player: { position: { x: 0, z: 3.5 }, hp: 100, maxHp: 100, attackCooldown: 0 },
@@ -471,23 +499,8 @@ export function createGame(mode: GameMode, seedInput: string, meta: MetaProgress
     assetVersion: ASSET_VERSION,
     weatherPhase: streams.next("region") * Math.PI * 2,
     fortifications: [-1, 0, 1].map((lane, index) => ({ id: `fort-${index}`, lane, level: 1, hp: 160, maxHp: 160, built: false })),
-    adventure: mode === "training" ? {
-      hero,
-      room: 1,
-      maxRooms: 4,
-      roomKind: "camp",
-      level: 1,
-      experience: 0,
-      nextExperience: 18,
-      attack: hero === "guardian" ? 38 : hero === "ranger" ? 31 : 27,
-      attackRange: hero === "guardian" ? 3.8 : hero === "ranger" ? 11.5 : 6.2,
-      moveSpeed: hero === "ranger" ? 8.4 : hero === "artificer" ? 7.2 : 6.7,
-      armor: hero === "guardian" ? 2 : 0,
-      skillPower: 0,
-      skillCooldown: 0,
-      gear: [],
-      choices: []
-    } : null
+    adventure: mode === "training" ? createAdventureState(hero, seed) : null,
+    survival: mode === "survival" ? createSurvivalState() : null
   };
 }
 

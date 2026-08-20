@@ -389,6 +389,8 @@ button:focus-visible, input:focus-visible {
   border-left: 1px solid rgba(235,221,185,0.15);
 }
 .resource-hud span:first-child { border-left: 0; }
+.resource-hud .garrison-only { display: none; }
+.hud.is-survival .resource-hud .garrison-only { display: flex; }
 .resource-hud i { color: #e1ae58; font-size: 19px; }
 .resource-token {
   position: relative;
@@ -608,6 +610,91 @@ button:focus-visible, input:focus-visible {
   box-shadow: 0 12px 28px rgba(4, 17, 19, 0.28), inset 0 1px rgba(255,255,255,0.07);
   transform: translateX(-50%);
 }
+.hud.is-survival .hotbar { bottom: 66px; max-width: min(900px, calc(100vw - 30px)); overflow-x: auto; }
+.hud.is-survival .hotbar.is-garrison-hidden { display: none; }
+.garrison-panel {
+  position: absolute;
+  z-index: 9;
+  left: 50%;
+  bottom: 10px;
+  width: min(760px, calc(100vw - 24px));
+  pointer-events: auto;
+  transform: translateX(-50%);
+}
+.garrison-panel nav {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  width: min(330px, 100%);
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid rgba(225,178,93,.35);
+  border-radius: 12px;
+  background: rgba(13,35,36,.94);
+  box-shadow: 0 8px 22px rgba(4,17,19,.34);
+}
+.garrison-panel nav button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 40px;
+  border: 0;
+  border-right: 1px solid rgba(225,178,93,.18);
+  background: transparent;
+  color: #aebdb3;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 800;
+}
+.garrison-panel nav button:last-child { border-right: 0; }
+.garrison-panel nav button.is-active { background: #315f59; color: #f0d18b; }
+#garrisonContent:not(:empty) {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 7px;
+  overflow-x: auto;
+  border: 1px solid rgba(225,178,93,.3);
+  border-radius: 13px;
+  background: rgba(9,27,30,.94);
+}
+.garrison-card {
+  position: relative;
+  flex: 1 0 120px;
+  min-width: 120px;
+  min-height: 62px;
+  padding: 7px 8px;
+  border: 1px solid rgba(221,204,159,.28);
+  border-radius: 10px;
+  background: rgba(27,57,55,.86);
+  color: #ecdfc2;
+  cursor: pointer;
+  text-align: left;
+}
+.garrison-card.is-selected { border-color: #e2ad55; box-shadow: inset 0 0 0 1px rgba(226,173,85,.28); }
+.garrison-card:disabled { cursor: not-allowed; filter: saturate(.45); opacity: .55; }
+.garrison-card strong, .garrison-card small { display: block; }
+.garrison-card strong { font-size: 10px; }
+.garrison-card small { margin-top: 3px; color: #aebdb3; font-size: 8px; line-height: 1.35; }
+.garrison-card i { color: #e2ad55; font-size: 18px; }
+.squad-world-label {
+  position: absolute;
+  display: grid;
+  min-width: 74px;
+  padding: 3px 5px;
+  border: 1px solid rgba(116,185,151,.42);
+  border-radius: 7px;
+  background: rgba(15,43,41,.82);
+  color: #e8dfc8;
+  pointer-events: auto;
+  cursor: pointer;
+  transform: translate(-50%, -100%);
+}
+.squad-world-label strong { font-size: 8px; }
+.squad-world-label span { height: 3px; margin-top: 2px; background: rgba(4,18,19,.7); }
+.squad-world-label span i { display: block; height: 100%; background: #72b78f; }
+.squad-world-label.is-selected { border-color: #e2ad55; }
 
 .choice-labels,
 .building-labels {
@@ -921,6 +1008,10 @@ button:focus-visible, input:focus-visible {
   .audio-panel { right: 10px; top: 57px; }
   .top-actions #endDayBtn { display: grid; }
   .hotbar { bottom: 9px; gap: 4px; padding: 4px; max-width: calc(100vw - 104px); }
+  .hud.is-survival .hotbar { right: 8px; bottom: 58px; max-width: none; }
+  .garrison-panel { bottom: max(6px, env(safe-area-inset-bottom)); width: calc(100vw - 16px); }
+  .garrison-panel nav { width: 260px; }
+  .garrison-panel nav button { min-height: 36px; }
   .build-slot { grid-template-rows: 31px 12px 12px; width: 62px; height: 62px; padding: 2px 3px 3px; border-radius: 9px; }
   .model-thumb-frame { width: 42px; height: 30px; }
   .build-slot .model-thumb { width: 42px; height: 30px; }

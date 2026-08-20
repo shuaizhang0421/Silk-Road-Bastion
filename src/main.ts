@@ -69,8 +69,8 @@ async function boot(): Promise<void> {
         document.querySelectorAll("[data-mode]").forEach((item) => item.classList.toggle("is-active", item === button));
         const modeCopy = {
           expedition: ["守商路，逐夜扩建", "从一座小驿站出发，每 3 夜开辟新的防线。"],
-          survival: ["一座城，守得更久", "没有扩城机会，靠布局、维修与针对性火力抵住战术攻势。"],
-          training: ["一名行者，一次远行", "选择职业，清理随机营地，带着不同装备挑战最终首领。"]
+          survival: ["经营驻军，守住一座城", "生产粮草、训练小队、处理伤员，在固定十二处功能区布置长期防线。"],
+          training: ["一名行者，一次远行", "选择职业，穿过随机路线，用装备和技能构筑挑战章节首领。"]
         } as const;
         document.querySelector("#modeKicker")!.textContent = modeCopy[selectedMode][0];
         document.querySelector("#modeDescription")!.textContent = modeCopy[selectedMode][1];

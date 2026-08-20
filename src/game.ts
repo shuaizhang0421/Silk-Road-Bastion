@@ -20,6 +20,7 @@ import {
   relics,
   ASSET_VERSION,
   buildingDurabilityGrowth,
+  LEGACY_SURVIVAL_KEY,
   PREVIOUS_SAVE_KEY,
   SAVE_KEY,
   SeedStreams,
@@ -27,6 +28,16 @@ import {
   weaponLevelPower,
   weaponLevelRate
 } from "./data";
+import {
+  createSurvivalState,
+  doctrineStacks,
+  doctrines,
+  squadDefinitions,
+  squadLivingMembers,
+  squadPopulation,
+  squadSpecializationNames,
+  survivalGuardNodes
+} from "./survival";
 import {
   AssetLibrary,
   applyBuildingVisualState,
@@ -61,9 +72,12 @@ import type {
   SaveEnvelope,
   SaveSlotSummary,
   RelicDefinition
+  , SquadState
+  , SquadType
 } from "./types";
 
-const BUILD_ORDER: BuildingType[] = ["market", "workshop", "ballista", "fire", "antiair", "trebuchet"];
+const EXPEDITION_BUILD_ORDER: BuildingType[] = ["market", "workshop", "ballista", "fire", "antiair", "trebuchet"];
+const SURVIVAL_BUILD_ORDER: BuildingType[] = ["granary", "market", "workshop", "barracks", "range", "engineerCamp", "infirmary", "ballista", "fire", "antiair", "trebuchet"];
 const ROAD_LANES = [-6.2, 0, 6.2];
 
 /** 远景专用的不规则岩脊，避免规则圆锥在俯视镜头中呈现成一排金字塔。 */
@@ -204,6 +218,12 @@ interface TitleActor {
 interface SupportAlly {
   rig: CharacterRig;
   cooldown: number;
+}
+
+interface SquadVisual {
+  root: THREE.Group;
+  rigs: CharacterRig[];
+  label: HTMLButtonElement;
 }
 
 /**
@@ -596,6 +616,9 @@ export class SilkRoadGame {
   private titleActors: TitleActor[] = [];
   private adventureProps: THREE.Object3D[] = [];
   private supportAllies: SupportAlly[] = [];
+  private squadObjects = new Map<string, SquadVisual>();
+  private guardNodeObjects = new Map<string, THREE.Group>();
+  private survivalTab: "build" | "recruit" | "army" = "build";
   private occluderMeshes: OccluderMesh[] = [];
   private occludedMeshes = new Set<THREE.Mesh>();
   private occlusionRefreshCooldown = 0;
@@ -613,6 +636,8 @@ export class SilkRoadGame {
     time: document.querySelector<HTMLElement>("#timeLabel")!,
     day: document.querySelector<HTMLElement>("#dayProgress")!,
     playerHp: document.querySelector<HTMLElement>("#playerHpFill")!,
+    playerRoleName: document.querySelector<HTMLElement>("#playerRoleName")!,
+    skill: document.querySelector<HTMLButtonElement>("#skillBtn")!,
     gateHp: document.querySelector<HTMLElement>("#gateHpFill")!,
     gateBar: document.querySelector<HTMLElement>("#gateWorldBar")!,
     gateLevel: document.querySelector<HTMLElement>("#gateLevelLabel")!,
@@ -637,6 +662,9 @@ export class SilkRoadGame {
     fieldObjective: document.querySelector<HTMLElement>("#fieldObjective")!,
     fieldObjectiveText: document.querySelector<HTMLElement>("#fieldObjectiveText")!,
     hotbar: document.querySelector<HTMLElement>("#hotbar")!,
+    garrisonPanel: document.querySelector<HTMLElement>("#garrisonPanel")!,
+    garrisonTabs: document.querySelector<HTMLElement>("#garrisonTabs")!,
+    garrisonContent: document.querySelector<HTMLElement>("#garrisonContent")!,
     buildingLabels: document.querySelector<HTMLElement>("#buildingLabels")!,
     choiceLabels: document.querySelector<HTMLElement>("#choiceLabels")!,
     waveClear: document.querySelector<HTMLElement>("#waveClear")!,
@@ -682,12 +710,15 @@ export class SilkRoadGame {
       wood: document.querySelector<HTMLElement>("#woodValue")!,
       stone: document.querySelector<HTMLElement>("#stoneValue")!,
       gear: document.querySelector<HTMLElement>("#gearValue")!
+      , food: document.querySelector<HTMLElement>("#foodValue")!
+      , population: document.querySelector<HTMLElement>("#populationValue")!
     },
     rates: {
       coin: document.querySelector<HTMLElement>("#coinRate")!,
       wood: document.querySelector<HTMLElement>("#woodRate")!,
       stone: document.querySelector<HTMLElement>("#stoneRate")!,
       gear: document.querySelector<HTMLElement>("#gearRate")!
+      , food: document.querySelector<HTMLElement>("#foodRate")!
     }
   };
 
@@ -800,7 +831,13 @@ export class SilkRoadGame {
     this.hud.root.classList.toggle("is-expedition", mode === "expedition");
     this.hud.adventure.classList.add("is-hidden");
     this.updateHud(true);
-    this.setPrompt("ph-storefront", "选择商栈后，后勤区会显示可用地基；建成后会持续产币");
+    if (mode === "survival") {
+      this.survivalTab = "build";
+      this.renderSurvivalPanel();
+      this.setPrompt("ph-bowl-food", "驻军需要粮草：先建粮秣院，再建兵营训练刀盾营");
+    } else {
+      this.setPrompt("ph-storefront", "选择商栈后，后勤区会显示可用地基；建成后会持续产币");
+    }
     this.save();
   }
 
@@ -851,10 +888,17 @@ export class SilkRoadGame {
     this.buildWorld();
     if (this.state.phase === "relic") {
       this.setChoiceUi(true);
-      const choices = this.state.pendingChoices
-        .map((id) => relics.find((entry) => entry.id === id))
-        .filter((entry): entry is (typeof relics)[number] => Boolean(entry));
-      this.spawnChoices("relic", choices.map((entry) => ({ id: entry.id, color: entry.color })));
+      if (this.state.mode === "survival" && this.state.pendingChoices.some((id) => id.startsWith("doctrine:"))) {
+        const choices = this.state.pendingChoices
+          .map((id) => doctrines.find((entry) => entry.id === id.slice("doctrine:".length)))
+          .filter((entry): entry is (typeof doctrines)[number] => Boolean(entry));
+        this.spawnChoices("relic", choices.map((entry) => ({ id: `doctrine:${entry.id}`, color: entry.rarity === "legendary" ? 0xd8aa45 : entry.rarity === "rare" ? 0x6d91b5 : 0x70956f })));
+      } else {
+        const choices = this.state.pendingChoices
+          .map((id) => relics.find((entry) => entry.id === id))
+          .filter((entry): entry is (typeof relics)[number] => Boolean(entry));
+        this.spawnChoices("relic", choices.map((entry) => ({ id: entry.id, color: entry.color })));
+      }
     } else if (this.state.phase === "route") {
       this.setChoiceUi(true);
       this.spawnChoices("route", this.state.pendingChoices.map((id) => ({ id, color: regionById(id.split("|")[0]!).accent })));
@@ -990,6 +1034,16 @@ export class SilkRoadGame {
           : "第二步：点底部“床弩”，再点门楼发光地基");
         return;
       }
+      if (this.state?.mode === "survival" && this.state.survival && this.state.survival.tutorialStep < 4) {
+        const prompts = [
+          "先在后勤区建造粮秣院",
+          "再在军事区建造镇戍兵营",
+          "打开招募，训练第一支刀盾营",
+          "打开军队，选择刀盾营并部署到发光驻守点"
+        ];
+        this.setPrompt("ph-shield", prompts[this.state.survival.tutorialStep] ?? prompts[3]!);
+        return;
+      }
       if (this.state?.phase === "day" && this.playerRig && this.isInsideFort(this.playerRig.root.position) && !this.selectedBuild) {
         this.state.phaseTime = 0;
       } else if (this.state?.phase === "day") {
@@ -1028,6 +1082,12 @@ export class SilkRoadGame {
     });
     this.syncQualityButtons();
     this.hud.mobileAction.addEventListener("click", () => this.interact());
+    this.hud.garrisonTabs.querySelectorAll<HTMLButtonElement>("[data-garrison-tab]").forEach((button) => {
+      button.addEventListener("click", () => {
+        this.survivalTab = button.dataset.garrisonTab as typeof this.survivalTab;
+        this.renderSurvivalPanel();
+      });
+    });
     this.hud.waveClear.addEventListener("click", () => {
       if (this.state?.phase === "clear") this.state.phaseTime = 0;
     });
@@ -1152,11 +1212,15 @@ export class SilkRoadGame {
     this.titleActors = [];
     this.adventureProps = [];
     this.supportAllies = [];
+    this.squadObjects.forEach((visual) => visual.label.remove());
+    this.squadObjects.clear();
+    this.guardNodeObjects.clear();
     this.occluderMeshes = [];
     this.occludedMeshes.clear();
     this.occlusionRefreshCooldown = 0;
     this.selectedEnemyId = null;
     this.selectedBuildingId = null;
+    if (this.state?.survival) this.state.survival.selectedSquadId = null;
     this.hud.context.classList.add("is-hidden");
     this.preview = undefined;
     this.rangeIndicator = undefined;
@@ -1311,10 +1375,11 @@ export class SilkRoadGame {
     } else {
       this.spawnPlayer(region);
       for (const building of activeState.buildings) this.createBuildingVisual(building);
-      if (activeState.phase === "day") {
+      if (activeState.phase === "day" && activeState.mode !== "survival") {
         this.spawnResources(region);
         this.spawnFieldObjective(region);
       }
+      if (activeState.mode === "survival") this.spawnSurvivalSquads();
     }
     this.refreshOccluders();
     this.updateGateBarPosition();
@@ -2418,7 +2483,14 @@ export class SilkRoadGame {
   }
 
   private tutorialPadIndex(): number {
-    if (!this.state || this.meta.seenTutorial) return -1;
+    if (!this.state) return -1;
+    if (this.state.mode === "survival" && this.state.survival && this.state.survival.tutorialStep < 2) {
+      const expected: BuildingType = this.state.survival.tutorialStep === 0 ? "granary" : "barracks";
+      return this.currentFortLayout().zones.findIndex((zone, index) =>
+        canBuildInZone(expected, zone) && !this.state!.buildings.some((building) => building.padIndex === index)
+      );
+    }
+    if (this.meta.seenTutorial) return -1;
     if (this.state.tutorialStep === 0) return 4;
     if (this.state.tutorialStep === 1) return 0;
     return -1;
@@ -3103,9 +3175,19 @@ function makeWindWornMound(
       ballista: "床弩",
       fire: "火油",
       antiair: "防空弩",
-      trebuchet: "投石车"
+      trebuchet: "投石车",
+      granary: "粮秣院",
+      barracks: "兵营",
+      range: "射圃",
+      engineerCamp: "机关营",
+      infirmary: "军医营"
     };
-    const availableOrder = BUILD_ORDER.filter((type) => this.isBuildingUnlocked(type));
+    const survivalOnboarding = this.state?.mode === "survival"
+      && Boolean(this.state.survival)
+      && (this.state.survival?.tutorialStep ?? 5) < 5;
+    const availableOrder = this.buildOrder()
+      .filter((type) => this.isBuildingUnlocked(type))
+      .filter((type) => !survivalOnboarding || this.isTutorialBuildAllowed(type));
     availableOrder.forEach((type) => {
       const definition = buildings[type];
       const button = document.createElement("button");
@@ -3121,6 +3203,10 @@ function makeWindWornMound(
       button.addEventListener("click", () => this.selectBuild(type));
       this.hud.hotbar.appendChild(button);
     });
+    if (survivalOnboarding) {
+      this.renderSurvivalPanel();
+      return;
+    }
     const fortify = document.createElement("button");
     fortify.type = "button";
     fortify.className = "build-slot fortify-slot";
@@ -3136,9 +3222,389 @@ function makeWindWornMound(
     fortify.classList.toggle("is-tutorial-locked", !fortifyUnlocked);
     fortify.addEventListener("click", () => this.fortifyRoad());
     this.hud.hotbar.appendChild(fortify);
+    this.renderSurvivalPanel();
+  }
+
+  private buildOrder(): BuildingType[] {
+    return this.state?.mode === "survival" || (!this.state && this.mode === "survival") ? SURVIVAL_BUILD_ORDER : EXPEDITION_BUILD_ORDER;
+  }
+
+  private renderSurvivalPanel(): void {
+    const survival = this.state?.mode === "survival" ? this.state.survival : null;
+    this.hud.garrisonPanel.classList.toggle("is-hidden", !survival);
+    if (!survival) {
+      this.hud.hotbar.classList.remove("is-garrison-hidden");
+      return;
+    }
+    this.hud.garrisonTabs.querySelectorAll<HTMLButtonElement>("[data-garrison-tab]").forEach((button) => {
+      button.classList.toggle("is-active", button.dataset.garrisonTab === this.survivalTab);
+    });
+    this.hud.hotbar.classList.toggle("is-garrison-hidden", this.survivalTab !== "build");
+    this.hud.garrisonContent.innerHTML = "";
+    if (this.survivalTab === "build") return;
+    if (this.survivalTab === "recruit") {
+      if (survival.populationCap < 24) {
+        const populationCost = this.populationUpgradeCost();
+        const upgrade = document.createElement("button");
+        upgrade.type = "button";
+        upgrade.className = "garrison-card";
+        upgrade.disabled = this.state!.phase !== "day";
+        upgrade.innerHTML = `<i class="ph ph-house-line"></i><strong>扩充主帐军户</strong><small>人口 ${survival.populationCap} → ${survival.populationCap + 4}<br>${this.formatCost(populationCost)}</small>`;
+        upgrade.addEventListener("click", () => this.upgradeSurvivalPopulation());
+        this.hud.garrisonContent.appendChild(upgrade);
+      }
+      (Object.keys(squadDefinitions) as SquadType[]).forEach((type) => {
+        const definition = squadDefinitions[type];
+        const facilityType: BuildingType = type === "shield" || type === "spear" ? "barracks" : type === "archer" ? "range" : "engineerCamp";
+        const facility = this.state!.buildings.find((building) => building.type === facilityType && building.hp > 0);
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "garrison-card";
+        const locked = this.state!.epoch < definition.unlockEpoch;
+        const noFacility = !facility;
+        const queueCount = facility ? survival.trainingQueue.filter((entry) => entry.buildingId === facility.id).length : 0;
+        const noPopulation = squadPopulation(survival) + definition.population > survival.populationCap;
+        button.disabled = locked || noFacility || queueCount >= 3 || noPopulation;
+        const reason = locked ? `第 ${definition.unlockEpoch} 夜开放` : noFacility ? `需要${buildings[facilityType].name}` : queueCount >= 3 ? "训练队列已满" : noPopulation ? "人口已满" : `${definition.trainingTime}秒 · 队列 ${queueCount}/3`;
+        button.innerHTML = `<i class="ph ${definition.icon}"></i><strong>${definition.name}</strong><small>${reason}<br>${this.formatTrainingCost(definition.cost)}</small>`;
+        button.title = definition.description;
+        button.addEventListener("click", () => this.queueSquadTraining(type));
+        this.hud.garrisonContent.appendChild(button);
+      });
+      for (const entry of survival.trainingQueue) {
+        const status = document.createElement("div");
+        status.className = "garrison-card";
+        status.innerHTML = `<i class="ph ph-timer"></i><strong>训练中 · ${squadDefinitions[entry.squadType].name}</strong><small>剩余 ${Math.max(0, entry.remaining).toFixed(1)} 秒</small>`;
+        this.hud.garrisonContent.appendChild(status);
+      }
+      return;
+    }
+    for (const squad of survival.squads) {
+      const definition = squadDefinitions[squad.type];
+      const living = squadLivingMembers(squad);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `garrison-card${survival.selectedSquadId === squad.id ? " is-selected" : ""}`;
+      button.innerHTML = `<i class="ph ${definition.icon}"></i><strong>${definition.name} · Lv.${squad.level}</strong><small>${squad.dispatched ? "执行派遣中" : `${living}/4 人 · 伤员 ${squad.wounded} · 缺员 ${squad.fallen}`}<br>${squad.specialization ? squadSpecializationNames[squad.specialization] : `经验 ${squad.experience}/${this.squadExperienceTarget(squad.level)}`}</small>`;
+      button.addEventListener("click", () => this.selectSquad(squad.id));
+      this.hud.garrisonContent.appendChild(button);
+    }
+    const selected = survival.squads.find((squad) => squad.id === survival.selectedSquadId);
+    if (!selected) return;
+    const actions: Array<[string, string, () => void, boolean]> = [
+      ["ph-map-pin", "驻守", () => this.setSquadCommand("hold"), selected.dispatched],
+      ["ph-crosshair", "集火", () => this.setSquadCommand("focus"), selected.dispatched || this.state!.phase !== "night"],
+      ["ph-arrow-u-down-left", "撤退", () => this.setSquadCommand("retreat"), selected.dispatched],
+      ["ph-barbell", "操练", () => this.drillSelectedSquad(), selected.dispatched || this.state!.phase !== "day" || selected.drilledEpoch === this.state!.epoch],
+      ["ph-first-aid", "治疗", () => this.healSelectedSquad(), selected.wounded <= 0 || !this.state!.buildings.some((building) => building.type === "infirmary" && building.hp > 0)],
+      ["ph-user-plus", "补员", () => this.replenishSelectedSquad(), selected.fallen <= 0 || this.state!.phase !== "day"],
+      ["ph-compass", "派遣", () => this.dispatchSelectedSquad(), selected.dispatched || this.state!.phase !== "day" || Boolean(survival.dispatch)]
+    ];
+    for (const [icon, label, action, disabled] of actions) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "garrison-card";
+      button.disabled = disabled;
+      button.innerHTML = `<i class="ph ${icon}"></i><strong>${label}</strong><small>${label === "操练" ? "4粮草 2钱币" : label === "专精" ? "三级后永久路线" : label === "治疗" ? "每人2粮草 1钱币" : label === "补员" ? "按单兵成本补充" : label === "派遣" ? "离队一夜，换取物资" : "战术命令"}</small>`;
+      button.addEventListener("click", action);
+      this.hud.garrisonContent.appendChild(button);
+    }
+    if (selected.level >= 3 && !selected.specialization) {
+      for (const specialization of squadDefinitions[selected.type].specializations) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "garrison-card doctrine-choice";
+        button.innerHTML = `<i class="ph ph-git-branch"></i><strong>${squadSpecializationNames[specialization]}</strong><small>永久专精，选择后不可更改</small>`;
+        button.addEventListener("click", () => this.chooseSquadSpecialization(specialization));
+        this.hud.garrisonContent.appendChild(button);
+      }
+    }
+  }
+
+  private formatTrainingCost(cost: Partial<Resources> & { food?: number }): string {
+    const resourceCost = this.formatCost(cost);
+    return `${resourceCost}${resourceCost ? " · " : ""}粮草 ${cost.food ?? 0}`;
+  }
+
+  private populationUpgradeCost(): Partial<Resources> {
+    const tier = Math.max(0, Math.floor(((this.state?.survival?.populationCap ?? 12) - 12) / 4));
+    return { coin: 14 + tier * 10, stone: 6 + tier * 5 };
+  }
+
+  private upgradeSurvivalPopulation(): void {
+    if (!this.state?.survival || this.state.phase !== "day" || this.state.survival.populationCap >= 24) return;
+    const cost = this.populationUpgradeCost();
+    if (!canAfford(this.state.resources, cost)) return void this.setPrompt("ph-package", `扩充军户还差 ${this.formatMissingCost(cost)}`);
+    pay(this.state.resources, cost);
+    this.state.survival.populationCap += 4;
+    const ratio = this.state.coreHp / Math.max(1, this.state.coreMaxHp);
+    this.state.coreMaxHp += 36;
+    this.state.coreHp = Math.max(1, Math.round(this.state.coreMaxHp * ratio));
+    this.sound.build();
+    this.setPrompt("ph-users-three", `主帐军户扩充，人口上限提高至 ${this.state.survival.populationCap}`);
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private queueSquadTraining(type: SquadType): void {
+    if (!this.state?.survival || this.state.phase !== "day") return;
+    const survival = this.state.survival;
+    const definition = squadDefinitions[type];
+    const facilityType: BuildingType = type === "shield" || type === "spear" ? "barracks" : type === "archer" ? "range" : "engineerCamp";
+    const facility = this.state.buildings.find((building) => building.type === facilityType && building.hp > 0);
+    if (!facility) return void this.setPrompt("ph-buildings", `需要先建造${buildings[facilityType].name}`);
+    if (survival.trainingQueue.filter((entry) => entry.buildingId === facility.id).length >= 3) return void this.setPrompt("ph-timer", "这座训练设施的队列已满");
+    if (squadPopulation(survival) + definition.population > survival.populationCap) return void this.setPrompt("ph-users-three", "驻军人口已满，升级主帐可提高上限");
+    const { food, ...baseCost } = definition.cost;
+    if (!canAfford(this.state.resources, baseCost) || survival.food < food) return void this.setPrompt("ph-package", `${definition.name}需要${this.formatTrainingCost(definition.cost)}`);
+    pay(this.state.resources, baseCost);
+    survival.food -= food;
+    survival.trainingQueue.push({ id: `train-${Date.now()}-${type}`, buildingId: facility.id, squadType: type, remaining: definition.trainingTime, duration: definition.trainingTime });
+    this.sound.build();
+    this.setPrompt(definition.icon, `${definition.name}开始训练，进度跨夜保留`);
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private squadExperienceTarget(level: number): number { return level >= 5 ? 999 : 18 + level * 12; }
+
+  private selectSquad(id: string): void {
+    if (!this.state?.survival) return;
+    this.state.survival.selectedSquadId = id;
+    this.selectedBuildingId = null;
+    this.selectedBuild = null;
+    this.refreshGuardNodeVisibility(true);
+    this.renderSurvivalPanel();
+  }
+
+  private setSquadCommand(command: SquadState["command"]): void {
+    if (!this.state?.survival) return;
+    const squad = this.state.survival.squads.find((entry) => entry.id === this.state!.survival!.selectedSquadId);
+    if (!squad || squad.dispatched) return;
+    squad.command = command;
+    if (command === "retreat") {
+      squad.guardNodeId = "core-guard";
+      squad.focusEnemyId = null;
+      this.setPrompt("ph-arrow-u-down-left", `${squadDefinitions[squad.type].name}撤回主帐防线`);
+    } else if (command === "focus") {
+      if (!this.selectedEnemyId) return void this.setPrompt("ph-crosshair", "先点击一名敌人，再下达集火命令");
+      squad.focusEnemyId = this.selectedEnemyId;
+      this.setPrompt("ph-crosshair", `${squadDefinitions[squad.type].name}已锁定目标`);
+    } else {
+      squad.focusEnemyId = null;
+      this.setPrompt("ph-map-pin", "点击场景中发光的驻守节点完成调度");
+      this.refreshGuardNodeVisibility(true);
+    }
+    this.renderSurvivalPanel();
+  }
+
+  private drillSelectedSquad(): void {
+    if (!this.state?.survival || this.state.phase !== "day") return;
+    const squad = this.state.survival.squads.find((entry) => entry.id === this.state!.survival!.selectedSquadId);
+    if (!squad || squad.drilledEpoch === this.state.epoch) return;
+    const discount = Math.min(0.6, doctrineStacks(this.state.survival, "drill-cost") * 0.2);
+    const foodCost = Math.max(1, Math.ceil(4 * (1 - discount)));
+    const coinCost = Math.max(1, Math.ceil(2 * (1 - discount)));
+    if (this.state.survival.food < foodCost || this.state.resources.coin < coinCost) return void this.setPrompt("ph-bowl-food", `操练需要粮草 ${foodCost}、钱币 ${coinCost}`);
+    this.state.survival.food -= foodCost;
+    this.state.resources.coin -= coinCost;
+    squad.drilledEpoch = this.state.epoch;
+    squad.experience += 12;
+    this.applySquadLevelUps(squad);
+    this.sound.horn();
+    this.setPrompt("ph-barbell", `${squadDefinitions[squad.type].name}完成今日操练`);
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private chooseSquadSpecialization(specialization: SquadState["specialization"]): void {
+    if (!this.state?.survival) return;
+    const squad = this.state.survival.squads.find((entry) => entry.id === this.state!.survival!.selectedSquadId);
+    if (!squad || squad.level < 3 || squad.specialization || !specialization || !squadDefinitions[squad.type].specializations.includes(specialization)) return;
+    squad.specialization = specialization;
+    this.sound.build();
+    this.setPrompt("ph-git-branch", `${squadDefinitions[squad.type].name}专精调整为${squadSpecializationNames[squad.specialization]}`);
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private healSelectedSquad(): void {
+    if (!this.state?.survival) return;
+    const squad = this.state.survival.squads.find((entry) => entry.id === this.state!.survival!.selectedSquadId);
+    if (!squad || squad.wounded <= 0) return;
+    if (!this.state.buildings.some((building) => building.type === "infirmary" && building.hp > 0)) return void this.setPrompt("ph-first-aid", "需要建造可运作的军医营");
+    if (this.state.survival.food < 2 || this.state.resources.coin < 1) return void this.setPrompt("ph-bowl-food", "治疗一名伤员需要粮草 2、钱币 1");
+    this.state.survival.food -= 2;
+    this.state.resources.coin -= 1;
+    squad.wounded -= 1;
+    const missing = squad.memberHp.findIndex((hp) => hp <= 0);
+    if (missing >= 0) squad.memberHp[missing] = squadDefinitions[squad.type].maxMemberHp;
+    this.state.survival.woundedRecovered += 1;
+    this.sound.production();
+    this.refreshSquadVisual(squad);
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private replenishSelectedSquad(): void {
+    if (!this.state?.survival || this.state.phase !== "day") return;
+    const squad = this.state.survival.squads.find((entry) => entry.id === this.state!.survival!.selectedSquadId);
+    if (!squad || squad.fallen <= 0) return;
+    const definition = squadDefinitions[squad.type];
+    const foodCost = Math.max(2, Math.ceil(definition.cost.food / 4));
+    const coinCost = Math.max(2, Math.ceil((definition.cost.coin ?? 0) / 4));
+    if (this.state.survival.food < foodCost || this.state.resources.coin < coinCost) return void this.setPrompt("ph-package", `补充一名士兵需要粮草 ${foodCost}、钱币 ${coinCost}`);
+    this.state.survival.food -= foodCost;
+    this.state.resources.coin -= coinCost;
+    const slot = squad.memberHp.findIndex((hp) => hp <= 0);
+    if (slot >= 0) squad.memberHp[slot] = definition.maxMemberHp * (1 + (squad.level - 1) * 0.09);
+    squad.fallen -= 1;
+    this.refreshSquadVisual(squad);
+    this.sound.horn();
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private dispatchSelectedSquad(): void {
+    if (!this.state?.survival || this.state.phase !== "day" || this.state.survival.dispatch) return;
+    const squad = this.state.survival.squads.find((entry) => entry.id === this.state!.survival!.selectedSquadId);
+    if (!squad || squad.dispatched) return;
+    const kinds = ["scout", "escort", "salvage"] as const;
+    const kind = kinds[Math.floor((this.streams?.next("event") ?? 0) * kinds.length)]!;
+    const riskReduction = Math.min(0.6, doctrineStacks(this.state.survival, "dispatch-risk") * 0.2);
+    const reward = kind === "scout" ? { coin: 8, gear: 2, food: 5 } : kind === "escort" ? { coin: 14, wood: 4, food: 3 } : { stone: 6, gear: 3, food: 4 };
+    this.state.survival.dispatch = { id: `dispatch-${this.state.epoch}`, kind, squadId: squad.id, risk: 0.24 * (1 - riskReduction), returnEpoch: this.state.epoch + 1, reward };
+    squad.dispatched = true;
+    this.removeSquadVisual(squad.id);
+    this.setPrompt("ph-compass", `${squadDefinitions[squad.type].name}已执行${kind === "scout" ? "侦察" : kind === "escort" ? "护送" : "物资抢救"}，下一天返回`);
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private guardNodeHasCapacity(nodeId: string, movingSquadId?: string): boolean {
+    if (!this.state?.survival) return false;
+    const node = survivalGuardNodes.find((entry) => entry.id === nodeId);
+    if (!node) return false;
+    const used = this.state.survival.squads.filter((squad) => !squad.dispatched && squad.id !== movingSquadId && squad.guardNodeId === nodeId).length;
+    return used < node.capacity;
+  }
+
+  private spawnSurvivalSquads(): void {
+    if (!this.state?.survival) return;
+    for (const node of survivalGuardNodes) {
+      const marker = new THREE.Group();
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(1.15, 1.48, 24),
+        new THREE.MeshBasicMaterial({ color: 0xd6af58, transparent: true, opacity: 0.65, depthWrite: false, side: THREE.DoubleSide })
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.08;
+      const arrow = new THREE.Mesh(
+        new THREE.ConeGeometry(0.28, 0.8, 5),
+        new THREE.MeshBasicMaterial({ color: 0xf0cc70, transparent: true, opacity: 0.8, depthWrite: false })
+      );
+      arrow.position.y = 1.15;
+      arrow.rotation.z = Math.PI;
+      marker.add(ring, arrow);
+      marker.position.set(node.position.x, 0, node.position.z);
+      marker.rotation.y = node.rotation;
+      marker.userData.guardNodeId = node.id;
+      marker.traverse((child) => { child.userData.guardNodeId = node.id; });
+      marker.visible = false;
+      this.world.add(marker);
+      this.guardNodeObjects.set(node.id, marker);
+    }
+    for (const squad of this.state.survival.squads) if (!squad.dispatched) this.createSquadVisual(squad);
+  }
+
+  private createSquadVisual(squad: SquadState): void {
+    if (this.squadObjects.has(squad.id)) return;
+    const definition = squadDefinitions[squad.type];
+    const root = new THREE.Group();
+    root.userData.squadId = squad.id;
+    const node = survivalGuardNodes.find((entry) => entry.id === squad.guardNodeId) ?? survivalGuardNodes[5]!;
+    root.position.set(node.position.x, 0, node.position.z);
+    root.rotation.y = node.rotation;
+    const rigs: CharacterRig[] = [];
+    const living = squadLivingMembers(squad);
+    for (let index = 0; index < living; index += 1) {
+      const rig = this.library.unit(squad.type === "shield" ? "shield" : squad.type === "archer" ? "archer" : squad.type === "engineer" ? "sapper" : "raider");
+      const column = index % 2;
+      const row = Math.floor(index / 2);
+      rig.root.scale.multiplyScalar(0.72);
+      rig.root.position.set((column - 0.5) * 1.35, 0, (row - 0.5) * 1.18);
+      rig.root.userData.squadId = squad.id;
+      rig.root.traverse((child) => { child.userData.squadId = squad.id; });
+      root.add(rig.root);
+      rigs.push(rig);
+    }
+    this.world.add(root);
+    const label = document.createElement("button");
+    label.type = "button";
+    label.className = "squad-world-label is-idle-status";
+    label.innerHTML = `<strong><i class="ph ${definition.icon}"></i>${definition.name} <small>${living}/4 · ${squad.level}阶</small></strong><span><i></i></span>`;
+    label.addEventListener("click", () => this.selectSquad(squad.id));
+    this.hud.buildingLabels.appendChild(label);
+    this.squadObjects.set(squad.id, { root, rigs, label });
+  }
+
+  private removeSquadVisual(id: string): void {
+    const visual = this.squadObjects.get(id);
+    if (!visual) return;
+    visual.label.remove();
+    this.removeWorldObject(visual.root);
+    this.squadObjects.delete(id);
+  }
+
+  private refreshSquadVisual(squad: SquadState): void {
+    this.removeSquadVisual(squad.id);
+    if (!squad.dispatched) this.createSquadVisual(squad);
+  }
+
+  private refreshGuardNodeVisibility(show: boolean): void {
+    const selected = this.state?.survival?.squads.find((squad) => squad.id === this.state?.survival?.selectedSquadId);
+    for (const node of survivalGuardNodes) {
+      const object = this.guardNodeObjects.get(node.id);
+      if (!object) continue;
+      object.visible = Boolean(show && selected && !selected.dispatched && node.allowed.includes(selected.type) && this.guardNodeHasCapacity(node.id, selected.id));
+    }
+  }
+
+  private moveSelectedSquadToNode(nodeId: string): void {
+    if (!this.state?.survival) return;
+    const squad = this.state.survival.squads.find((entry) => entry.id === this.state!.survival!.selectedSquadId);
+    const node = survivalGuardNodes.find((entry) => entry.id === nodeId);
+    if (!squad || !node || !node.allowed.includes(squad.type) || !this.guardNodeHasCapacity(nodeId, squad.id)) {
+      this.setPrompt("ph-warning", "该驻守点不适合这支小队，或容量已满");
+      return;
+    }
+    squad.guardNodeId = nodeId;
+    squad.command = "hold";
+    squad.focusEnemyId = null;
+    this.state.survival.tutorialStep = Math.max(4, this.state.survival.tutorialStep);
+    this.refreshGuardNodeVisibility(false);
+    this.setPrompt("ph-map-pin", `${squadDefinitions[squad.type].name}正在调往新防线`);
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
+  private applySquadLevelUps(squad: SquadState): void {
+    while (squad.level < 5 && squad.experience >= this.squadExperienceTarget(squad.level)) {
+      squad.experience -= this.squadExperienceTarget(squad.level);
+      squad.level += 1;
+      const maxHp = squadDefinitions[squad.type].maxMemberHp * (1 + (squad.level - 1) * 0.09);
+      squad.memberHp = squad.memberHp.map((hp) => hp > 0 ? Math.min(maxHp, hp + maxHp * 0.18) : hp);
+      this.setPrompt("ph-medal", `${squadDefinitions[squad.type].name}晋升至 ${squad.level} 阶${squad.level === 3 ? "，请在军队面板选择永久专精" : ""}`);
+    }
   }
 
   private isBuildingUnlocked(type: BuildingType): boolean {
+    if (["granary", "barracks", "range", "engineerCamp", "infirmary"].includes(type)) {
+      if (this.state?.mode !== "survival") return false;
+      if (type === "range") return this.state.epoch >= 2;
+      if (type === "engineerCamp") return this.state.epoch >= 5;
+      return true;
+    }
     if (!this.state) return type !== "antiair" && type !== "trebuchet";
     const lateNight = this.state.mode === "survival" ? this.state.epoch : this.state.expansionLevel * 3 + 1;
     if (type === "fire") return this.state.mode === "survival" ? lateNight >= 3 : this.state.expansionLevel >= 1;
@@ -3149,7 +3615,16 @@ function makeWindWornMound(
 
   /** 前两步只开放一项正确操作，避免新玩家在六种建筑里猜第一步。 */
   private isTutorialBuildAllowed(type: BuildingType | "fortify"): boolean {
-    if (!this.state || this.meta.seenTutorial || this.state.mode !== "expedition") return true;
+    if (!this.state) return true;
+    if (this.state.mode === "survival" && this.state.survival && this.state.survival.tutorialStep < 5) {
+      const step = this.state.survival.tutorialStep;
+      if (step === 0) return type === "granary";
+      if (step === 1) return type === "barracks";
+      // 招募、部署和首夜阶段只保留当前任务所需的分页与月亮按钮，
+      // 防止十二个功能位和全部建筑同时涌入新玩家视野。
+      return false;
+    }
+    if (this.meta.seenTutorial || this.state.mode !== "expedition") return true;
     if (this.state.tutorialStep === 0) return type === "market";
     if (this.state.tutorialStep === 1) return type === "ballista";
     return true;
@@ -3226,8 +3701,9 @@ function makeWindWornMound(
   }
 
   private renderModelThumbnails(): void {
-    if (this.modelThumbnailCache.size === BUILD_ORDER.length) {
-      for (const type of BUILD_ORDER) {
+    const order = this.buildOrder();
+    if (order.every((type) => this.modelThumbnailCache.has(type))) {
+      for (const type of order) {
         const image = this.hud.hotbar.querySelector<HTMLImageElement>(`[data-thumb="${type}"]`);
         const cached = this.modelThumbnailCache.get(type);
         if (image && cached) image.src = cached;
@@ -3247,7 +3723,7 @@ function makeWindWornMound(
     camera.position.set(7, 6.4, 8);
     camera.lookAt(0, 1.8, 0);
     const region = regionById("oasis");
-    for (const type of BUILD_ORDER) {
+    for (const type of order) {
       const scene = new THREE.Scene();
       scene.add(new THREE.HemisphereLight(0xf5e4bf, 0x29484a, 2.5));
       const sun = new THREE.DirectionalLight(0xffd7a1, 3.4);
@@ -3352,6 +3828,8 @@ function makeWindWornMound(
       || typeof this.findUserData(hit?.object, "fieldObjective") === "string"
       || typeof this.findUserData(hit?.object, "buildingId") === "string"
       || typeof this.findUserData(hit?.object, "fortificationId") === "string"
+      || typeof this.findUserData(hit?.object, "squadId") === "string"
+      || typeof this.findUserData(hit?.object, "guardNodeId") === "string"
       || Boolean(this.findUserData(hit?.object, "gate"));
     this.canvas.style.cursor = isTarget ? "pointer" : this.selectedBuild && this.hoveredPad >= 0 ? "crosshair" : "default";
     this.updatePreview();
@@ -3417,6 +3895,16 @@ function makeWindWornMound(
     const choiceIndex = this.findUserData(hit.object, "choiceIndex");
     if (typeof choiceIndex === "number") {
       this.selectChoice(choiceIndex);
+      return;
+    }
+    const guardNodeId = this.findUserData(hit.object, "guardNodeId");
+    if (typeof guardNodeId === "string") {
+      this.moveSelectedSquadToNode(guardNodeId);
+      return;
+    }
+    const squadId = this.findUserData(hit.object, "squadId");
+    if (typeof squadId === "string") {
+      this.selectSquad(squadId);
       return;
     }
     const gate = this.findUserData(hit.object, "gate");
@@ -3504,6 +3992,8 @@ function makeWindWornMound(
       || Boolean(this.findUserData(object, "gate"))
       || typeof this.findUserData(object, "buildingId") === "string"
       || typeof this.findUserData(object, "fortificationId") === "string"
+      || typeof this.findUserData(object, "squadId") === "string"
+      || typeof this.findUserData(object, "guardNodeId") === "string"
       || typeof this.findUserData(object, "enemyId") === "string"
       || typeof this.findUserData(object, "padIndex") === "number"
       || Boolean(this.findUserData(object, "ground"));
@@ -3555,7 +4045,7 @@ function makeWindWornMound(
     if (!this.state || !this.canBuildNow()) return;
     const zone = this.currentFortLayout().zones[padIndex];
     if (!zone || !canBuildInZone(type, zone)) {
-      const labels = { defense: "城防位", courtyard: "院落位", logistics: "后勤位", siege: "攻城位" } as const;
+      const labels = { defense: "城防位", courtyard: "院落位", logistics: "后勤位", military: "军事位", siege: "攻城位" } as const;
       this.setPrompt("ph-map-pin", zone ? `${buildings[type].name}不能部署在${labels[zone.type]}` : "该建造区域尚未开放");
       return;
     }
@@ -3581,7 +4071,7 @@ function makeWindWornMound(
       status: { productionPaused: false, targeted: false, lastHitAt: 0 }
     };
     this.state.buildings.push(building);
-    this.state.prosperity += type === "market" || type === "workshop" ? 2 : 1;
+    this.state.prosperity += ["market", "workshop", "granary", "barracks", "range", "engineerCamp", "infirmary"].includes(type) ? 2 : 1;
     this.createBuildingVisual(building);
     const pad = this.buildPads[padIndex];
     const expansionMarker = pad?.userData.expansionMarker as THREE.Object3D | undefined;
@@ -3595,7 +4085,19 @@ function makeWindWornMound(
     this.updatePreview();
     this.sound.build();
     this.burst(this.zonePosition(padIndex).setY(1), regionById(this.state.regionId).accent, 12);
-    if (this.state.tutorialStep === 0 && type === "market") {
+    if (this.state.survival && type === "granary" && this.state.survival.tutorialStep === 0) {
+      this.state.survival.tutorialStep = 1;
+      this.survivalTab = "build";
+      this.renderHotbar();
+      this.renderModelThumbnails();
+      this.setPrompt("ph-shield", "粮草开始生产。现在在军事区建造镇戍兵营");
+    } else if (this.state.survival && type === "barracks" && this.state.survival.tutorialStep <= 1) {
+      this.state.survival.tutorialStep = 2;
+      this.survivalTab = "recruit";
+      this.renderHotbar();
+      this.renderModelThumbnails();
+      this.setPrompt("ph-users-three", "兵营已就绪。打开招募，训练第一支刀盾营");
+    } else if (this.state.tutorialStep === 0 && type === "market") {
       this.state.tutorialStep = 1;
       this.refreshTutorialPads();
       this.renderHotbar();
@@ -4080,7 +4582,7 @@ function makeWindWornMound(
   }
 
   private canBuildNow(): boolean {
-    return Boolean(this.state && (this.state.phase === "day" || this.state.phase === "night"));
+    return Boolean(this.state && (this.state.mode === "survival" ? this.state.phase === "day" : this.state.phase === "day" || this.state.phase === "night"));
   }
 
   private buildingEffect(building: BuildingState): string {
@@ -4106,7 +4608,12 @@ function makeWindWornMound(
     if (building.type === "fire") return building.level < 3 ? `快速伤害 ${Math.round(11 * weaponLevelPower(building.level))}，Lv.3 可选燃烧或黏滞专精` : this.activeSpecialization(building) === "tar" ? `黏滞油：减速更强、更久` : `燃烧油：快速伤害 ${Math.round(11 * weaponLevelPower(building.level))}，附带灼烧`;
     if (building.type === "antiair") return building.level < 3 ? `优先击落飞行机关，Lv.3 可选猎空或连射专精` : this.activeSpecialization(building) === "volley" ? `连射弩：优先连射多名飞行机关` : `猎空弩：对空伤害 ${Math.round(26 * weaponLevelPower(building.level))}，专杀飞行机关`;
     if (building.type === "trebuchet") return building.level < 3 ? `远程震石 ${Math.round(34 * weaponLevelPower(building.level))}，Lv.3 可选攻城或震裂专精` : this.activeSpecialization(building) === "shatter" ? `震裂投车：爆炸范围扩大` : `攻城投车：对攻城兽与重甲目标更强`;
-    return `附近敌人减速，范围 ${Math.round((4.5 + building.level * 0.55) * 10) / 10}`;
+    if (building.type === "granary") return `每 3 秒生产 ${1 + Math.floor(Math.sqrt(building.level))} 粮草，并扩充储粮上限`;
+    if (building.type === "barracks") return `训练刀盾营与长枪营 · 队列最多 3 项`;
+    if (building.type === "range") return `训练弓弩营 · 训练效率 +${Math.max(0, building.level - 1) * 8}%`;
+    if (building.type === "engineerCamp") return `训练机关兵 · 强化维修、拒马与防空支援`;
+    if (building.type === "infirmary") return `提高战后伤员存活率，消耗粮草与钱币治疗`;
+    return "驻军设施持续运作，受损或被摧毁时会暂停";
   }
 
   private gateUpgradePrice(): { coin: number; stone: number } {
@@ -4194,6 +4701,7 @@ function makeWindWornMound(
     this.positionWorldUi();
 
     this.state.player.attackCooldown = Math.max(0, this.state.player.attackCooldown - delta);
+    if (this.state.survival) this.state.survival.commanderCooldown = Math.max(0, this.state.survival.commanderCooldown - delta);
     if (this.state.mode === "training") {
       this.updateAdventure(simulationDelta);
       this.autosaveCooldown -= delta;
@@ -4201,7 +4709,10 @@ function makeWindWornMound(
       return;
     }
     if (this.state.phase === "day" || this.state.phase === "night") this.updateEconomy(simulationDelta);
-    if (this.state.phase === "day") this.updateDay(delta);
+    if (this.state.phase === "day") {
+      this.updateDay(delta);
+      if (this.state.mode === "survival") this.updateSquads(delta);
+    }
     if (this.state.phase === "night") this.updateNight(simulationDelta);
     if (this.state.phase === "clear") this.updateClear(delta);
     if (this.state.phase === "relic" || this.state.phase === "route") this.animateChoices(delta);
@@ -4782,6 +5293,22 @@ function makeWindWornMound(
 
   private action(): void {
     if (!this.state || !this.playerRig || this.state.player.attackCooldown > 0) return;
+    if (this.state.mode === "survival" && this.state.survival) {
+      const survival = this.state.survival;
+      if (survival.commanderCooldown > 0) {
+        this.setPrompt("ph-timer", `集结号令还有 ${Math.ceil(survival.commanderCooldown)} 秒可用`);
+        return;
+      }
+      const duration = 7 * (1 + doctrineStacks(survival, "commander") * 0.4);
+      survival.commanderAuraUntil = performance.now() + duration * 1000;
+      survival.commanderCooldown = 28;
+      this.state.player.attackCooldown = 0.7;
+      this.playerRig.attack();
+      this.sound.horn();
+      this.burst(this.playerRig.root.position.clone().setY(1.4), 0xe7bd5f, 18);
+      this.setPrompt("ph-bell-ringing", `集结号令：附近小队 ${duration.toFixed(0)} 秒内战力提升`);
+      return;
+    }
     this.state.player.attackCooldown = 0.72;
     this.playerRig.attack();
     if (this.state.mode === "training" && this.state.adventure) {
@@ -5066,6 +5593,10 @@ function makeWindWornMound(
       this.state.phaseTime = this.state.dayLength;
       return;
     }
+    if (this.state.mode === "survival" && this.state.survival && this.state.survival.tutorialStep < 4) {
+      this.state.phaseTime = this.state.dayLength;
+      return;
+    }
     this.state.phaseTime -= delta;
     const warningAt = this.state.relics.includes("warning") ? 11 : 8;
     if (!this.hornedThisDay && this.state.phaseTime <= warningAt && this.state.phaseTime > 0) {
@@ -5115,6 +5646,7 @@ function makeWindWornMound(
 
   private updateEconomy(delta: number): void {
     if (!this.state) return;
+    if (this.state.mode === "survival" && this.state.phase === "day") this.updateTrainingQueues(delta);
     this.state.productionTimer -= delta;
     this.economyCooldown = this.state.productionTimer;
     if (this.state.productionTimer <= 0) {
@@ -5122,6 +5654,14 @@ function makeWindWornMound(
       const rates = this.economyRates();
       for (const key of Object.keys(rates) as ResourceKey[]) {
         this.state.resources[key] += rates[key];
+      }
+      if (this.state.survival) {
+        const granaries = this.state.buildings.filter((building) => building.type === "granary" && building.hp > 0);
+        const foodBonus = doctrineStacks(this.state.survival, "food-production");
+        const produced = granaries.reduce((sum, building) => sum + 1 + Math.floor(Math.sqrt(building.level)) + foodBonus, 0);
+        const capBonus = granaries.reduce((sum, building) => sum + 12 + Math.max(0, building.level - 1) * 5, 0);
+        this.state.survival.foodCap = 36 + capBonus + doctrineStacks(this.state.survival, "food-cap") * 12;
+        this.state.survival.food = Math.min(this.state.survival.foodCap, this.state.survival.food + produced);
       }
       // 商栈把过量钱币转成真实订单：保留一笔建造储备，再按木材、石料、机巧轮换采购。
       // 远征贸易成本较低；极限守城的运输受压，单份订单更贵。
@@ -5153,6 +5693,40 @@ function makeWindWornMound(
     }
   }
 
+  private updateTrainingQueues(delta: number): void {
+    if (!this.state?.survival || delta <= 0) return;
+    const survival = this.state.survival;
+    for (const entry of survival.trainingQueue) {
+      const building = this.state.buildings.find((candidate) => candidate.id === entry.buildingId);
+      if (!building || building.hp <= 0) continue;
+      entry.remaining -= delta * (1 + Math.max(0, building.level - 1) * 0.08);
+    }
+    const completed = survival.trainingQueue.filter((entry) => entry.remaining <= 0);
+    if (!completed.length) return;
+    survival.trainingQueue = survival.trainingQueue.filter((entry) => entry.remaining > 0);
+    for (const entry of completed) {
+      const definition = squadDefinitions[entry.squadType];
+      const preferredNodes = entry.squadType === "archer" || entry.squadType === "engineer"
+        ? ["wall-west", "wall-east", "courtyard-west", "courtyard-east"]
+        : ["inner-gate", "outer-center", "courtyard-west", "courtyard-east"];
+      const guardNodeId = preferredNodes.find((id) => this.guardNodeHasCapacity(id)) ?? "core-guard";
+      const squad: SquadState = {
+        id: `squad-${this.state.epoch}-${entry.squadType}-${Date.now().toString(36)}`,
+        type: entry.squadType,
+        memberHp: Array.from({ length: 4 }, () => definition.maxMemberHp), wounded: 0, fallen: 0,
+        level: 1, experience: 0, specialization: null, guardNodeId, command: "hold",
+        focusEnemyId: null, attackCooldown: 0, ultimateCooldown: 0, drilledEpoch: 0, dispatched: false, fatigue: 0
+      };
+      survival.squads.push(squad);
+      this.createSquadVisual(squad);
+      survival.tutorialStep = Math.max(survival.tutorialStep, 3);
+      this.sound.horn();
+      this.setPrompt(definition.icon, `${definition.name}训练完成。打开“军队”，选择小队并部署到驻守点`);
+    }
+    this.renderSurvivalPanel();
+    this.save();
+  }
+
   private startNight(): void {
     if (!this.state || !this.streams) return;
     if (this.state.mode === "expedition" && !this.meta.seenTutorial && this.state.tutorialStep < 2) {
@@ -5160,6 +5734,29 @@ function makeWindWornMound(
         ? "先建造商栈，再开始第一夜"
         : "先建造床弩，再开始第一夜");
       return;
+    }
+    if (this.state.mode === "survival" && this.state.survival) {
+      const availableSquads = this.state.survival.squads.filter((squad) => !squad.dispatched && squadLivingMembers(squad) > 0);
+      if (!availableSquads.length) {
+        this.survivalTab = "recruit";
+        this.renderSurvivalPanel();
+        this.setPrompt("ph-shield", "至少训练一支可作战小队，才能开始第一夜");
+        return;
+      }
+      if (this.state.survival.tutorialStep < 4) {
+        this.survivalTab = "army";
+        this.renderSurvivalPanel();
+        this.setPrompt("ph-map-pin", "先选择刀盾营，再点击门前发光驻守点完成部署");
+        return;
+      }
+      const upkeepReduction = Math.min(0.6, doctrineStacks(this.state.survival, "upkeep") * 0.2);
+      const upkeep = Math.max(1, Math.ceil(availableSquads.length * 2 * (1 - upkeepReduction)));
+      const supplied = this.state.survival.food >= upkeep;
+      if (supplied) this.state.survival.food -= upkeep;
+      for (const squad of availableSquads) squad.fatigue = supplied ? Math.max(0, squad.fatigue - 0.25) : Math.min(1, squad.fatigue + 0.5);
+      if (!supplied) this.setPrompt("ph-warning", "粮草不足：驻军本夜进入疲惫状态，攻击与移动降低");
+      this.state.survival.tutorialStep = Math.max(this.state.survival.tutorialStep, 4);
+      this.refreshGuardNodeVisibility(false);
     }
     this.state.phase = "night";
     this.state.phaseTime = 0;
@@ -5173,12 +5770,19 @@ function makeWindWornMound(
     this.selectedBuild = null;
     this.updatePreview();
     this.hud.context.classList.add("is-hidden");
-    const defensePower = this.state.buildings.reduce((sum, building) => {
+    let defensePower = this.state.buildings.reduce((sum, building) => {
       const definition = buildings[building.type];
       if (!definition.attack || !definition.cooldown || building.hp <= 0) return sum;
       const rangeWeight = definition.range ? THREE.MathUtils.clamp(definition.range / 30, 0.65, 1.45) : 1;
       return sum + (definition.attack * weaponLevelPower(building.level) * weaponLevelRate(building.level) * rangeWeight) / definition.cooldown;
     }, 0);
+    if (this.state.survival) {
+      defensePower += this.state.survival.squads.reduce((sum, squad) => {
+        if (squad.dispatched) return sum;
+        const definition = squadDefinitions[squad.type];
+        return sum + squadLivingMembers(squad) * definition.damage * (1 + (squad.level - 1) * 0.12) / definition.cooldown;
+      }, 0);
+    }
     const directorGenerated = directorWave(
       {
         epoch: this.state.epoch,
@@ -5201,7 +5805,7 @@ function makeWindWornMound(
       directorGenerated.splice(-Math.max(1, Math.ceil(directorGenerated.length * 0.18)));
       this.state.scoutIntel = 0;
     }
-    const tutorialWave = this.state.tutorialStep < 3;
+    const tutorialWave = this.state.mode === "survival" ? (this.state.survival?.tutorialStep ?? 5) < 5 : this.state.tutorialStep < 3;
     const bossKind = tutorialWave ? null : bossForNight(this.state.epoch, regionById(this.state.regionId));
     this.state.bossKind = bossKind;
     if (bossKind) {
@@ -5280,7 +5884,12 @@ function makeWindWornMound(
     } else {
       this.setPrompt("ph-shield-warning", "敌人已接近城门。击退全部敌军，天亮就过关");
     }
-    if (this.state.tutorialStep < 3) this.state.tutorialStep = 3;
+    if (this.state.mode === "survival" && this.state.survival) {
+      this.state.survival.tutorialStep = Math.max(5, this.state.survival.tutorialStep);
+      this.renderHotbar();
+      this.renderModelThumbnails();
+    }
+    else if (this.state.tutorialStep < 3) this.state.tutorialStep = 3;
     this.updateLighting(true);
   }
 
@@ -5295,6 +5904,7 @@ function makeWindWornMound(
       this.createEnemyVisual(enemy);
     }
     this.updateEnemies(delta);
+    this.updateSquads(delta);
     this.updateSupportAllies(delta);
     this.updateTowers(delta);
     this.cleanupEnemies();
@@ -5313,6 +5923,101 @@ function makeWindWornMound(
       this.supportAllies.push({ rig, cooldown: 0.1 + Math.abs(x) * 0.025 });
     }
     this.setPrompt("ph-shield-star", "商路守卫加入本夜防线，优先拦截破门后的敌军");
+  }
+
+  private updateSquads(delta: number): void {
+    if (!this.state?.survival) return;
+    const survival = this.state.survival;
+    const now = performance.now();
+    for (const squad of survival.squads) {
+      if (squad.dispatched || squadLivingMembers(squad) <= 0) continue;
+      const visual = this.squadObjects.get(squad.id);
+      if (!visual) continue;
+      for (const rig of visual.rigs) rig.mixer.update(delta);
+      const node = survivalGuardNodes.find((entry) => entry.id === squad.guardNodeId) ?? survivalGuardNodes[5]!;
+      const destination = new THREE.Vector3(node.position.x, 0, node.position.z);
+      const route = destination.clone().sub(visual.root.position).setY(0);
+      const distanceToPost = route.length();
+      const definition = squadDefinitions[squad.type];
+      const speedStacks = doctrineStacks(survival, `${squad.type}-speed`) + doctrineStacks(survival, "army-speed");
+      const moveSpeed = definition.moveSpeed * (1 + speedStacks * 0.08) * (1 - squad.fatigue * 0.28);
+      if (distanceToPost > 0.35) {
+        visual.root.position.addScaledVector(route.normalize(), Math.min(distanceToPost, moveSpeed * delta));
+        visual.root.rotation.y = Math.atan2(route.x, route.z);
+        visual.rigs.forEach((rig) => rig.setMoving(true));
+        continue;
+      }
+      visual.rigs.forEach((rig) => rig.setMoving(false));
+      squad.attackCooldown = Math.max(0, squad.attackCooldown - delta);
+      squad.ultimateCooldown = Math.max(0, (squad.ultimateCooldown ?? 0) - delta);
+      const rangeBonus = doctrineStacks(survival, `${squad.type}-range`) * 0.08 + doctrineStacks(survival, "night-range") * 0.05;
+      const range = definition.range * (1 + rangeBonus);
+      const focused = squad.focusEnemyId ? this.state.enemies.find((enemy) => enemy.id === squad.focusEnemyId && enemy.hp > 0) : undefined;
+      const candidates = this.state.enemies
+        .map((enemy) => ({ enemy, object: this.enemyObjects.get(enemy.id)?.object }))
+        .filter((entry): entry is { enemy: EnemyState; object: THREE.Group } => Boolean(entry.object)
+          && (squad.type === "archer" || squad.type === "engineer" || entry.enemy.type !== "flyer")
+          && entry.object!.position.distanceTo(visual.root.position) <= range)
+        .sort((a, b) => a.object.position.distanceTo(visual.root.position) - b.object.position.distanceTo(visual.root.position));
+      const target = focused && this.enemyObjects.get(focused.id)?.object.position.distanceTo(visual.root.position)! <= range
+        ? { enemy: focused, object: this.enemyObjects.get(focused.id)!.object }
+        : candidates[0];
+      if (!target || squad.attackCooldown > 0) continue;
+      const living = squadLivingMembers(squad);
+      const levelPower = 1 + Math.min(0.48, (squad.level - 1) * 0.12 + doctrineStacks(survival, "army-level") * 0.08);
+      const doctrinePower = 1 + doctrineStacks(survival, `${squad.type}-damage`) * 0.1;
+      const counter = squad.type === "spear" && (target.enemy.type === "ram" || target.enemy.type === "sapper")
+        ? 1.45 + doctrineStacks(survival, "spear-large") * 0.25 + (squad.specialization === "brace" ? 0.28 : 0)
+        : squad.type === "engineer" && target.enemy.type === "flyer"
+          ? 1.5 + doctrineStacks(survival, "engineer-air") * 0.3 + (squad.specialization === "anti-air" ? 0.45 : 0)
+          : squad.type === "archer" && target.enemy.type === "shield" ? (squad.specialization === "piercing-volley" ? 1.08 : 0.65)
+            : squad.type === "shield" && squad.specialization === "counterattack" ? 1.1 : 1;
+      const wallPower = node.kind === "wall" ? 1 + doctrineStacks(survival, "wall-power") * 0.18 : 1;
+      const aura = survival.commanderAuraUntil > now && this.playerRig && this.playerRig.root.position.distanceTo(visual.root.position) < 12 ? 1.22 : 1;
+      const damage = living * definition.damage * levelPower * doctrinePower * counter * wallPower * aura;
+      target.enemy.hp -= damage;
+      target.enemy.targetedUntil = now + 700;
+      squad.attackCooldown = definition.cooldown / (1 + doctrineStacks(survival, `${squad.type}-rate`) * 0.12);
+      visual.rigs.forEach((rig) => rig.attack());
+      const enemyVisual = this.enemyObjects.get(target.enemy.id);
+      this.reactToEnemyHit(enemyVisual, 0.1);
+      if (squad.type === "archer" || squad.type === "engineer") {
+        this.fireProjectile(visual.root.position.clone().setY(2), target.object.position.clone().setY(1.4), squad.type === "engineer" ? 0x7fc8bd : 0xe2bd68);
+      } else {
+        this.burst(target.object.position.clone().setY(1), 0xd4aa62, 4);
+      }
+      if (squad.specialization === "sweep" || squad.specialization === "fire-volley") {
+        const splashRadius = squad.specialization === "sweep" ? 3.8 : 4.8;
+        const splashPower = squad.specialization === "sweep" ? 0.38 : 0.28;
+        for (const nearby of candidates.filter((entry) => entry.enemy.id !== target.enemy.id && entry.object.position.distanceTo(target.object.position) <= splashRadius).slice(0, 3)) {
+          nearby.enemy.hp -= damage * splashPower;
+          nearby.enemy.targetedUntil = now + 550;
+          this.burst(nearby.object.position.clone().setY(1), squad.specialization === "fire-volley" ? 0xd77a39 : 0xd4aa62, 3);
+        }
+      }
+      if (squad.level >= 5 && squad.ultimateCooldown <= 0) {
+        squad.ultimateCooldown = squad.type === "archer" ? 15 : squad.type === "spear" ? 16 : 18;
+        if (squad.type === "shield") {
+          const maxHp = definition.maxMemberHp * (1 + (squad.level - 1) * 0.09);
+          squad.memberHp = squad.memberHp.map((hp) => hp > 0 ? Math.min(maxHp, hp + maxHp * 0.12) : hp);
+          this.burst(visual.root.position.clone().setY(1.25), 0x7fa99b, 12);
+        } else if (squad.type === "spear") {
+          for (const nearby of candidates.filter((entry) => entry.object.position.distanceTo(visual.root.position) <= 5.2).slice(0, 5)) nearby.enemy.hp -= damage * 0.72;
+          this.burst(visual.root.position.clone().setY(1.2), 0xe0b55f, 15);
+        } else if (squad.type === "archer") {
+          for (const nearby of candidates.slice(0, 5)) {
+            nearby.enemy.hp -= damage * 0.55;
+            this.fireProjectile(visual.root.position.clone().setY(2), nearby.object.position.clone().setY(1.4), 0xe8c46e);
+          }
+        } else {
+          const damaged = this.state.buildings.filter((building) => building.hp > 0 && building.hp < building.maxHp).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+          if (damaged) damaged.hp = Math.min(damaged.maxHp, damaged.hp + (squad.specialization === "field-repair" ? 38 : 24));
+          else this.state.gateHp = Math.min(this.state.gateMaxHp, this.state.gateHp + (squad.specialization === "field-repair" ? 38 : 24));
+          this.burst(visual.root.position.clone().setY(1.1), 0x68a99d, 12);
+        }
+        this.sound.horn();
+      }
+    }
   }
 
   private updateSupportAllies(delta: number): void {
@@ -5427,11 +6132,32 @@ function makeWindWornMound(
         continue;
       }
       const playerOutside = this.playerRig && !this.isInsideFort(this.playerRig.root.position);
-      if (playerOutside && (enemy.type === "raider" || enemy.type === "looter" || enemy.type === "archer") && visual.object.position.z < -10.5) {
+      if (this.state.mode !== "survival" && playerOutside && (enemy.type === "raider" || enemy.type === "looter" || enemy.type === "archer") && visual.object.position.z < -10.5) {
         enemy.target = "player";
         enemy.targetId = null;
       } else if (enemy.target === "player" && !playerOutside) {
         enemy.target = this.state.gateHp > 0 ? "gate" : "building";
+      }
+      if (this.state.survival && enemy.type !== "ram") {
+        const currentSquad = enemy.target === "squad"
+          ? this.state.survival.squads.find((squad) => squad.id === enemy.targetId && !squad.dispatched && squadLivingMembers(squad) > 0)
+          : undefined;
+        const currentVisual = currentSquad ? this.squadObjects.get(currentSquad.id) : undefined;
+        if (!currentSquad || !currentVisual) {
+          const aggroRange = enemy.type === "flyer" ? 22 : enemy.type === "archer" ? 17 : 8.5;
+          const nearby = this.state.survival.squads
+            .filter((squad) => !squad.dispatched && squadLivingMembers(squad) > 0)
+            .map((squad) => ({ squad, visual: this.squadObjects.get(squad.id) }))
+            .filter((entry): entry is { squad: SquadState; visual: SquadVisual } => Boolean(entry.visual))
+            .sort((a, b) => a.visual.root.position.distanceTo(visual.object.position) - b.visual.root.position.distanceTo(visual.object.position))[0];
+          if (nearby && nearby.visual.root.position.distanceTo(visual.object.position) <= aggroRange) {
+            enemy.target = "squad";
+            enemy.targetId = nearby.squad.id;
+          } else if (enemy.target === "squad") {
+            enemy.target = this.state.gateHp > 0 ? "gate" : "building";
+            enemy.targetId = null;
+          }
+        }
       }
       if (enemy.target === "gate" && this.state.gateHp <= 0) this.assignEnemyTarget(enemy, visual.object.position);
       if (enemy.target === "building") {
@@ -5454,6 +6180,9 @@ function makeWindWornMound(
       } else if (enemy.target === "building" && enemy.targetId) {
         const object = this.buildingObjects.get(enemy.targetId);
         if (object) destination.copy(object.position).setY(visual.object.position.y);
+      } else if (enemy.target === "squad" && enemy.targetId) {
+        const squadVisual = this.squadObjects.get(enemy.targetId);
+        if (squadVisual) destination.copy(squadVisual.root.position).setY(visual.object.position.y);
       }
       const distance = visual.object.position.distanceTo(destination);
       enemy.attackCooldown = Math.max(0, enemy.attackCooldown - delta);
@@ -5557,6 +6286,38 @@ function makeWindWornMound(
             this.playerRig.root.position.set(0, 0, 6);
             this.state.player.position = { x: 0, z: 6 };
             this.setPrompt("ph-first-aid", "行者负伤撤回主帐，损失 8 钱币");
+          }
+        } else if (enemy.target === "squad" && enemy.targetId && this.state.survival) {
+          const squad: SquadState | undefined = this.state.survival.squads.find((entry: SquadState) => entry.id === enemy.targetId);
+          const squadVisual = this.squadObjects.get(enemy.targetId);
+          if (!squad || !squadVisual || squadLivingMembers(squad) <= 0) {
+            enemy.target = this.state.gateHp > 0 ? "gate" : "building";
+            enemy.targetId = null;
+          } else {
+            const aliveIndices: number[] = squad.memberHp.map((hp: number, index: number) => hp > 0 ? index : -1).filter((index: number) => index >= 0);
+            const memberIndex = aliveIndices[Math.floor((this.streams?.next("combat") ?? 0) * aliveIndices.length)] ?? aliveIndices[0];
+            if (memberIndex !== undefined) {
+              const shieldReduction = squad.type === "shield" ? 0.72 : 1;
+              const formationReduction = squad.specialization === "iron-wall" ? 0.82 : 1;
+              const innerReduction = squad.guardNodeId === "inner-gate" ? Math.max(0.6, 1 - doctrineStacks(this.state.survival, "inner-guard") * 0.08) : 1;
+              const damage = enemy.damage * shieldReduction * formationReduction * innerReduction;
+              squad.memberHp[memberIndex] = Math.max(0, squad.memberHp[memberIndex]! - damage);
+              if (squad.specialization === "counterattack" && enemy.type !== "archer" && enemy.type !== "flyer") {
+                enemy.hp -= damage * 0.45;
+                enemy.targetedUntil = now + 500;
+              }
+              this.state.recentDamage += damage;
+              squadVisual.rigs[memberIndex]?.hit();
+              this.burst(squadVisual.root.position.clone().setY(1.2), 0xcf5d48, 5);
+              if (squad.memberHp[memberIndex] <= 0) {
+                this.refreshSquadVisual(squad);
+                this.setPrompt("ph-first-aid", `${squadDefinitions[squad.type].name}出现伤亡，天亮后需处理伤员与补员`);
+                if (squadLivingMembers(squad) <= 0) {
+                  enemy.target = this.state.gateHp > 0 ? "gate" : "building";
+                  enemy.targetId = null;
+                }
+              }
+            }
           }
         } else if (enemy.target === "building" && enemy.targetId) {
           const building = this.state.buildings.find((entry) => entry.id === enemy.targetId);
@@ -5754,12 +6515,12 @@ function makeWindWornMound(
       return;
     }
     const preferred: Partial<Record<EnemyState["type"], BuildingType[]>> = {
-      looter: ["market"],
-      archer: ["ballista", "antiair", "fire", "market"],
-      sapper: ["ballista", "fire", "workshop"],
-      flyer: ["market", "workshop", "ballista", "fire"],
+      looter: ["granary", "market"],
+      archer: ["range", "ballista", "antiair", "fire", "market"],
+      sapper: ["ballista", "fire", "workshop", "barracks", "range", "engineerCamp"],
+      flyer: ["range", "granary", "market", "workshop", "ballista", "fire"],
       shield: ["ballista", "fire"],
-      raider: ["ballista", "fire", "market", "workshop"]
+      raider: ["ballista", "fire", "barracks", "market", "workshop"]
     };
     const order = enemy.bossKind ? bossDefinitions[enemy.bossKind].preferredTargets : preferred[enemy.type] ?? [];
     const candidates = this.state.buildings
@@ -5974,10 +6735,44 @@ function makeWindWornMound(
     this.state.buildings.forEach((building) => {
       if (building.hp > 0) building.hp = Math.min(building.maxHp, building.hp + Math.round(building.maxHp * 0.04 * maintenanceMultiplier));
     });
+    let survivalAfterAction = "";
     if (this.state.mode === "survival") {
       const destroyed = this.state.buildings.filter((building) => building.hp <= 0).length;
       const damagePressure = this.state.recentDamage / Math.max(180, this.state.gateMaxHp + this.state.coreMaxHp);
       this.state.readinessPressure = THREE.MathUtils.clamp(this.state.readinessPressure * 0.82 + damagePressure * 2.1 + destroyed * 0.3, 0, 5);
+      if (this.state.survival) {
+        const infirmaryPower = this.state.buildings
+          .filter((building) => building.type === "infirmary" && building.hp > 0)
+          .reduce((sum, building) => sum + 0.05 + Math.min(0.15, building.level * 0.03), 0);
+        const saveChance = Math.min(0.9, 0.7 + infirmaryPower + doctrineStacks(this.state.survival, "wounded-save") * 0.1);
+        let woundedTonight = 0;
+        let fallenTonight = 0;
+        for (const squad of this.state.survival.squads) {
+          if (squad.dispatched) continue;
+          const empty = squad.memberHp.filter((hp) => hp <= 0).length;
+          const unprocessed = Math.max(0, empty - squad.wounded - squad.fallen);
+          for (let index = 0; index < unprocessed; index += 1) {
+            if ((this.streams?.next("loot") ?? Math.random()) < saveChance) {
+              squad.wounded += 1;
+              woundedTonight += 1;
+            } else {
+              squad.fallen += 1;
+              fallenTonight += 1;
+            }
+          }
+          squad.experience += 7 + Math.min(12, Math.ceil(this.state.epoch * 0.5));
+          this.applySquadLevelUps(squad);
+          this.state.survival.casualties += unprocessed;
+        }
+        if (doctrineStacks(this.state.survival, "night-income") > 0) {
+          const stacks = doctrineStacks(this.state.survival, "night-income");
+          this.state.resources.coin += stacks * 4;
+          this.state.survival.food = Math.min(this.state.survival.foodCap, this.state.survival.food + stacks * 2);
+        }
+        survivalAfterAction = woundedTonight + fallenTonight > 0
+          ? `战后清点：${woundedTonight} 名伤员、${fallenTonight} 名阵亡；天亮后治疗或补员`
+          : "驻军无新增伤亡";
+      }
     }
     if (this.state.relics.includes("ration")) {
       this.state.player.hp = Math.min(this.state.player.maxHp, this.state.player.hp + 35);
@@ -5990,9 +6785,13 @@ function makeWindWornMound(
       building.status.targeted = false;
     });
     this.hud.clearTitle.textContent = "守夜成功";
-    this.hud.clearSubtitle.textContent = `第 ${this.state.epoch} 夜完成，驿站核心安全`;
+    this.hud.clearSubtitle.textContent = this.state.mode === "survival"
+      ? `第 ${this.state.epoch} 夜完成 · ${survivalAfterAction || "驻军完成清点"}`
+      : `第 ${this.state.epoch} 夜完成，驿站核心安全`;
     this.hud.waveClear.classList.remove("is-hidden");
-    this.setPrompt("ph-check-circle", `第 ${this.state.epoch} 关完成，选择强化后进入下一夜`);
+    this.setPrompt(this.state.mode === "survival" ? "ph-first-aid" : "ph-check-circle", this.state.mode === "survival"
+      ? `${survivalAfterAction || "驻军完成清点"}；选择军令后进入下一夜`
+      : `第 ${this.state.epoch} 关完成，选择强化后进入下一夜`);
     this.sound.victory();
     this.save();
   }
@@ -6010,6 +6809,10 @@ function makeWindWornMound(
     this.state.phase = "relic";
     this.state.phaseTime = 0;
     this.setChoiceUi(true);
+    if (this.state.mode === "survival" && this.state.survival) {
+      this.openDoctrineChoices();
+      return;
+    }
     const stackCount = (id: string) => this.state!.relicStacks.find((entry) => entry.id === id)?.stacks ?? 0;
     const isSupplyNight = this.state.mode === "survival" && this.state.epoch % 3 === 0;
     const isBossNight = this.state.epoch % 5 === 0;
@@ -6053,6 +6856,78 @@ function makeWindWornMound(
       : "点击一座遗物台，获得本局强化");
     if (this.state.tutorialStep < 4) this.state.tutorialStep = 4;
     this.save();
+  }
+
+  private openDoctrineChoices(): void {
+    if (!this.state?.survival || !this.streams) return;
+    const survival = this.state.survival;
+    const supplyNight = this.state.epoch % 3 === 0 && this.state.epoch % 5 !== 0;
+    const bossNight = this.state.epoch % 5 === 0;
+    const ownedTypes = new Set(survival.squads.map((squad) => squad.type));
+    let pool = doctrines.filter((doctrine) => {
+      const stacks = survival.doctrineStacks.find((entry) => entry.id === doctrine.id)?.stacks ?? 0;
+      if (stacks >= doctrine.maxStacks) return false;
+      if (doctrine.squadType && !ownedTypes.has(doctrine.squadType)) return false;
+      if (doctrine.effect === "population" && survival.populationCap >= 24) return false;
+      const isSupply = doctrine.effect.startsWith("supply-");
+      return supplyNight ? isSupply : !isSupply;
+    });
+    if (bossNight) {
+      const rare = pool.filter((doctrine) => doctrine.rarity !== "common");
+      if (rare.length) {
+        const guaranteed = this.streams.pick("event", rare);
+        pool = [guaranteed, ...pool.filter((entry) => entry.id !== guaranteed.id)];
+      }
+    }
+    const fresh = pool.filter((doctrine) => !survival.recentDoctrineChoices.includes(doctrine.id));
+    if (fresh.length >= 3) pool = fresh;
+    const shuffled = this.streams.shuffle("event", pool);
+    const choices = shuffled.slice(0, 3);
+    while (choices.length < 3) {
+      const fallback = this.streams.pick("event", doctrines.filter((entry) => !choices.some((choice) => choice.id === entry.id)));
+      choices.push(fallback);
+    }
+    survival.pendingDoctrineChoices = choices.map((choice) => choice.id);
+    survival.recentDoctrineChoices = choices.map((choice) => choice.id);
+    this.state.pendingChoices = choices.map((choice) => `doctrine:${choice.id}`);
+    this.spawnChoices("relic", choices.map((choice) => ({ id: `doctrine:${choice.id}`, color: choice.rarity === "legendary" ? 0xd8aa45 : choice.rarity === "rare" ? 0x6d91b5 : 0x70956f })));
+    this.setPrompt(supplyNight ? "ph-package" : bossNight ? "ph-flag-banner" : "ph-scroll", supplyNight
+      ? "后勤补给抵达：粮草、军医、军械或修缮三选一"
+      : bossNight ? "首领已退：选择稀有军令或军旗" : "选择一项驻军军令，强化现有防线");
+    this.save();
+  }
+
+  private applyDoctrine(definition: (typeof doctrines)[number]): void {
+    if (!this.state?.survival) return;
+    const survival = this.state.survival;
+    const existing = survival.doctrineStacks.find((entry) => entry.id === definition.id);
+    if (existing) existing.stacks = Math.min(definition.maxStacks, existing.stacks + 1);
+    else survival.doctrineStacks.push({ id: definition.id, stacks: 1 });
+    if (definition.effect === "food-cap") {
+      survival.foodCap += 12;
+      survival.food = Math.min(survival.foodCap, survival.food + 8);
+    } else if (definition.effect === "population") {
+      survival.populationCap = Math.min(24, survival.populationCap + 4);
+    } else if (definition.effect === "supply-food") {
+      survival.food = Math.min(survival.foodCap, survival.food + 18);
+    } else if (definition.effect === "supply-arms") {
+      this.state.resources.wood += 7; this.state.resources.stone += 7; this.state.resources.gear += 3;
+    } else if (definition.effect === "supply-repair") {
+      this.state.gateHp = Math.min(this.state.gateMaxHp, this.state.gateHp + this.state.gateMaxHp * 0.2);
+      for (const building of this.state.buildings) if (building.hp > 0) building.hp = Math.min(building.maxHp, building.hp + building.maxHp * 0.18);
+    } else if (definition.effect === "supply-heal") {
+      let remaining = 4;
+      for (const squad of survival.squads) {
+        while (remaining > 0 && squad.wounded > 0) {
+          const slot = squad.memberHp.findIndex((hp) => hp <= 0);
+          if (slot < 0) break;
+          squad.memberHp[slot] = squadDefinitions[squad.type].maxMemberHp * (1 + (squad.level - 1) * 0.09);
+          squad.wounded -= 1;
+          remaining -= 1;
+          this.refreshSquadVisual(squad);
+        }
+      }
+    }
   }
 
   private isRelicImmediatelyUseful(relic: RelicDefinition): boolean {
@@ -6116,10 +6991,17 @@ function makeWindWornMound(
       label.className = "choice-label";
       label.dataset.choice = String(index);
       if (kind === "relic") {
-        const choice = relics.find((entry) => entry.id === option.id);
-        const stacks = choice ? this.state?.relicStacks.find((entry) => entry.id === choice.id)?.stacks ?? 0 : 0;
-        const rarity = choice?.rarity === "legendary" ? "传奇" : choice?.rarity === "rare" ? "稀有" : "普通";
-        label.innerHTML = `<i class="ph ${choice?.icon ?? "ph-sparkle"}"></i><strong>${choice?.name ?? "未知遗物"} · ${rarity}</strong><small>${choice?.text ?? ""}${stacks ? `（已叠 ${stacks} 层）` : ""}</small>`;
+        if (option.id.startsWith("doctrine:")) {
+          const doctrine = doctrines.find((entry) => entry.id === option.id.slice("doctrine:".length));
+          const stacks = doctrine ? this.state?.survival?.doctrineStacks.find((entry) => entry.id === doctrine.id)?.stacks ?? 0 : 0;
+          const rarity = doctrine?.rarity === "legendary" ? "传奇" : doctrine?.rarity === "rare" ? "稀有" : "普通";
+          label.innerHTML = `<i class="ph ${doctrine?.icon ?? "ph-scroll"}"></i><strong>${doctrine?.name ?? "未知军令"} · ${rarity}</strong><small>${doctrine?.text ?? ""}${stacks ? `（已叠 ${stacks} 层）` : ""}</small>`;
+        } else {
+          const choice = relics.find((entry) => entry.id === option.id);
+          const stacks = choice ? this.state?.relicStacks.find((entry) => entry.id === choice.id)?.stacks ?? 0 : 0;
+          const rarity = choice?.rarity === "legendary" ? "传奇" : choice?.rarity === "rare" ? "稀有" : "普通";
+          label.innerHTML = `<i class="ph ${choice?.icon ?? "ph-sparkle"}"></i><strong>${choice?.name ?? "未知遗物"} · ${rarity}</strong><small>${choice?.text ?? ""}${stacks ? `（已叠 ${stacks} 层）` : ""}</small>`;
+        }
       } else {
         const [routeId, moduleId] = option.id.split("|");
         const route = regionById(routeId!);
@@ -6140,6 +7022,16 @@ function makeWindWornMound(
     const id = this.state.pendingChoices[index];
     if (!id) return;
     if (this.state.phase === "relic") {
+      if (id.startsWith("doctrine:") && this.state.survival) {
+        const doctrine = doctrines.find((entry) => entry.id === id.slice("doctrine:".length));
+        if (!doctrine) return;
+        this.applyDoctrine(doctrine);
+        this.sound.build();
+        this.burst(this.choiceObjects[index]!.position.clone().setY(3), doctrine.rarity === "legendary" ? 0xd8aa45 : doctrine.rarity === "rare" ? 0x6d91b5 : 0x70956f, 18);
+        this.clearChoices();
+        this.nextEpoch();
+        return;
+      }
       const relic = relics.find((entry) => entry.id === id);
       if (!relic) return;
       relic.apply(this.state);
@@ -6239,9 +7131,30 @@ function makeWindWornMound(
     this.clearChoices();
     this.setChoiceUi(false);
     this.state.epoch += 1;
+    if (this.state.survival?.dispatch && this.state.survival.dispatch.returnEpoch <= this.state.epoch) {
+      const mission = this.state.survival.dispatch;
+      const squad = this.state.survival.squads.find((entry) => entry.id === mission.squadId);
+      if (squad) {
+        squad.dispatched = false;
+        const injured = (this.streams?.next("event") ?? 1) < mission.risk;
+        if (injured) {
+          const index = squad.memberHp.findIndex((hp) => hp > 0);
+          if (index >= 0) squad.memberHp[index] = 0;
+          squad.wounded += 1;
+          this.state.survival.casualties += 1;
+        }
+        squad.experience += 10;
+        this.applySquadLevelUps(squad);
+      }
+      const { food = 0, ...resources } = mission.reward;
+      for (const [key, value] of Object.entries(resources)) this.state.resources[key as ResourceKey] += value ?? 0;
+      this.state.survival.food = Math.min(this.state.survival.foodCap, this.state.survival.food + food);
+      this.state.survival.dispatch = null;
+      this.setPrompt("ph-compass", `派遣队已返回，带回物资${squad?.wounded ? "并有伤员需要治疗" : ""}`);
+    }
     this.state.phase = "day";
     this.hornedThisDay = false;
-    this.state.dayLength = this.state.mode === "survival" && this.state.epoch > 1 ? 12 : 20;
+    this.state.dayLength = this.state.mode === "survival" ? 25 : 20;
     this.state.phaseTime = this.state.dayLength;
     this.state.gathered = [];
     this.state.fieldObjective = null;
@@ -6255,7 +7168,7 @@ function makeWindWornMound(
     const expansionMessage = this.state.tutorialStep === 4
       ? "第二夜：点击建筑可升级或迁移；城门外三处道路缺口可安装拒马"
       : this.state.mode === "survival"
-      ? `固定驿站守至第 ${this.state.epoch} 夜。城外资源将逐渐减少，善用生产、维修与战利品`
+      ? `驻军备战第 ${this.state.epoch} 夜：经营、训练、治疗并重新布阵，可随时提前入夜`
       : this.state.expansionLevel === 1
       ? "左右侧院已开放：8 处功能区可用；可点布局图标自动整理防线"
       : this.state.expansionLevel === 2
@@ -6392,15 +7305,33 @@ function makeWindWornMound(
     const activeRegion = regionById(this.state.regionId);
     const weatherRule = this.state.regionId === "mist" ? "雾降低远程射界" : this.state.regionId === "canyon" ? "峡风强化投射器械" : this.state.regionId === "stardust" ? "星砂强化机关与机巧" : "商路气候稳定";
     this.hud.region.title = `${activeRegion.perk}；${weatherRule}`;
-    const tutorialObjective = this.state.mode === "expedition" && !this.meta.seenTutorial && this.state.phase === "day"
+    const expeditionTutorial = this.state.mode === "expedition" && !this.meta.seenTutorial && this.state.phase === "day"
       ? this.state.tutorialStep === 0
         ? "第一步：选择底部商栈，再点击后院发光地基"
         : this.state.tutorialStep === 1
           ? "第二步：选择底部床弩，再点击门楼发光地基"
           : this.state.tutorialStep === 2
             ? "防线已就绪：点击月亮，开始第一夜"
-            : null
+          : null
       : null;
+    const survivalTutorial = this.state.mode === "survival" && this.state.phase === "day" && (this.state.survival?.tutorialStep ?? 5) < 5
+      ? this.state.survival!.tutorialStep === 0
+        ? "第一步：在后勤区建造粮秣院，建立驻军粮草来源"
+        : this.state.survival!.tutorialStep === 1
+          ? "第二步：在军事区建造镇戍兵营"
+          : this.state.survival!.tutorialStep === 2
+            ? "第三步：打开招募，训练第一支刀盾营"
+            : this.state.survival!.tutorialStep === 3
+              ? "第四步：打开军队，选择刀盾营并部署到发光驻守点"
+              : "防线已就绪：点击月亮，开始第一夜"
+      : null;
+    const tutorialObjective = expeditionTutorial ?? survivalTutorial;
+    this.hud.playerRoleName.textContent = this.state.mode === "survival" ? "驻军将领" : "丝路行者";
+    this.hud.skill.title = this.state.mode === "survival" ? "集结号令：强化附近小队" : "使用战技";
+    this.hud.skill.innerHTML = this.state.mode === "survival"
+      ? `<i class="ph ph-bell-ringing"></i><small>${this.state.survival?.commanderCooldown ? `${Math.ceil(this.state.survival.commanderCooldown)}秒` : "号令"}</small>`
+      : `<i class="ph ph-sword"></i><small>战技</small>`;
+    this.hud.skill.disabled = this.state.mode === "survival" && (this.state.survival?.commanderCooldown ?? 0) > 0;
     this.hud.region.textContent = `${this.state.mode === "survival" ? "极限" : "远征"} · ${activeRegion.name}`;
     this.hud.phase.textContent = this.state.phase === "day"
       ? this.state.mode === "survival" ? "固守备战" : "远征备战"
@@ -6414,7 +7345,7 @@ function makeWindWornMound(
       : "";
     this.hud.objective.textContent = tutorialObjective ?? (this.state.phase === "day"
       ? this.state.mode === "survival"
-        ? `固定 8 处功能区 · 战备压力 ${Math.round(this.state.readinessPressure * 20)}% · ${this.state.epoch % 3 === 0 ? "本夜后补给" : `再守 ${3 - this.state.epoch % 3} 夜补给`}${productionHint}`
+        ? `固定 12 处功能区 · 驻军 ${this.state.survival ? squadPopulation(this.state.survival) : 0}/${this.state.survival?.populationCap ?? 12} · ${this.state.epoch % 3 === 0 ? "本夜后补给" : `再守 ${3 - this.state.epoch % 3} 夜补给`}${productionHint}`
         : `${this.state.regionModule ? `区域战术：${({ "high-ground": "高台射界", "side-gate": "侧门防线", "caravan-yard": "商队院", "mechanism-emplacement": "机关阵地" } as const)[this.state.regionModule]} · ` : ""}探索或建设${productionHint}`
       : this.state.phase === "night"
         ? `过关条件：击退本夜全部 ${this.state.enemies.length + this.spawnQueue.length} 名敌军`
@@ -6448,12 +7379,21 @@ function makeWindWornMound(
     this.hud.gateBar.classList.toggle("is-idle-status", !showGate);
     this.hud.coreBar.classList.toggle("is-idle-status", !showCore);
     this.hud.coreHpText.textContent = `${Math.ceil(this.state.coreHp)}/${this.state.coreMaxHp}`;
-    for (const key of Object.keys(this.hud.values) as ResourceKey[]) {
+    for (const key of ["coin", "wood", "stone", "gear"] as ResourceKey[]) {
       this.hud.values[key].textContent = Math.floor(this.state.resources[key]).toString();
     }
     const rates = this.economyRates();
-    for (const key of Object.keys(this.hud.rates) as ResourceKey[]) {
+    for (const key of ["coin", "wood", "stone", "gear"] as ResourceKey[]) {
       this.hud.rates[key].textContent = `+${rates[key]}/3秒`;
+    }
+    if (this.state.survival) {
+      this.hud.values.food.textContent = `${Math.floor(this.state.survival.food)}/${this.state.survival.foodCap}`;
+      this.hud.values.population.textContent = `${squadPopulation(this.state.survival)}/${this.state.survival.populationCap}`;
+      const foodRate = this.state.buildings
+        .filter((building) => building.type === "granary" && building.hp > 0)
+        .reduce((sum, building) => sum + 1 + Math.floor(Math.sqrt(building.level)) + doctrineStacks(this.state!.survival!, "food-production"), 0);
+      this.hud.rates.food.textContent = `+${foodRate}/3秒`;
+      this.renderSurvivalPanel();
     }
     this.hud.gateLevel.textContent = `城门 Lv.${this.state.gateLevel}`;
     this.hud.gateHpText.textContent = `${Math.ceil(this.state.gateHp)}/${this.state.gateMaxHp}`;
@@ -6633,6 +7573,20 @@ function makeWindWornMound(
     for (const visual of this.enemyObjects.values()) {
       this.positionElement(visual.label, visual.object.position.clone().setY(visual.object.position.y + 3.6));
     }
+    for (const [id, visual] of this.squadObjects) {
+      const squad = this.state?.survival?.squads.find((entry) => entry.id === id);
+      const living = squad ? squadLivingMembers(squad) : 0;
+      const strong = visual.label.querySelector("strong");
+      const fill = visual.label.querySelector<HTMLElement>("span i");
+      if (strong && squad) strong.innerHTML = `<i class="ph ${squadDefinitions[squad.type].icon}"></i>${squadDefinitions[squad.type].name} <small>${living}/4 · ${squad.level}阶</small>`;
+      if (fill && squad) {
+        const maxHp = squadDefinitions[squad.type].maxMemberHp * 4 * (1 + (squad.level - 1) * 0.09);
+        fill.style.width = `${Math.max(0, squad.memberHp.reduce((sum, hp) => sum + hp, 0) / maxHp) * 100}%`;
+      }
+      visual.label.classList.toggle("is-selected", this.state?.survival?.selectedSquadId === id);
+      visual.label.classList.toggle("is-idle-status", this.state?.survival?.selectedSquadId !== id && this.state?.phase !== "night");
+      this.positionElement(visual.label, visual.root.position.clone().setY(4.1));
+    }
   }
 
   private updateGateBarPosition(): void {
@@ -6699,7 +7653,7 @@ function makeWindWornMound(
     }
     const envelope: SaveEnvelope = {
       schema: "silk-road-bastion",
-      version: 7,
+      version: 8,
       savedAt: Date.now(),
       run: null,
       meta: this.meta
@@ -6711,7 +7665,7 @@ function makeWindWornMound(
     document.querySelector("#resultStats")!.innerHTML = finished.mode === "training"
       ? `等级 ${finished.adventure?.level ?? 1}<br>获得装备 ${finished.adventure?.gear.length ?? 0}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`
       : finished.mode === "survival"
-        ? `固定八处功能区 · 击败 ${finished.kills} 名敌军<br>精锐首领 ${finished.bossKills} · 战备压力 ${Math.round(finished.readinessPressure * 20)}%<br>剩余库存 ${Math.floor(finished.resources.coin + finished.resources.wood + finished.resources.stone + finished.resources.gear)} · 繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`
+        ? `固定十二处功能区 · 驻军 ${finished.survival?.squads.length ?? 0} 支 · 击败 ${finished.kills} 名敌军<br>首领 ${finished.bossKills} · 伤亡 ${finished.survival?.casualties ?? 0} · 治愈 ${finished.survival?.woundedRecovered ?? 0}<br>剩余粮草 ${Math.floor(finished.survival?.food ?? 0)} · 繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`
         : `扩建至 ${6 + finished.expansionLevel * 2} 处功能区 · 击败 ${finished.kills} 名敌军<br>首领 ${finished.bossKills} · 商路事件 ${finished.eventsCompleted}<br>最终区域 ${regionById(finished.regionId).name} · 繁荣 ${finished.prosperity}<br>获得声望 ${Math.max(1, Math.floor(finished.renownEarned / 3 + finished.epoch))}`;
     this.hud.root.classList.add("is-hidden");
     this.hud.waveClear.classList.add("is-hidden");
@@ -6721,7 +7675,7 @@ function makeWindWornMound(
   save(): void {
     const envelope: SaveEnvelope = {
       schema: "silk-road-bastion",
-      version: 7,
+      version: 8,
       savedAt: Date.now(),
       run: this.state && this.state.phase !== "gameover" ? this.state : null,
       meta: this.meta
@@ -6764,6 +7718,8 @@ function makeWindWornMound(
         const migrated = this.normalizeEnvelope(JSON.parse(raw));
         if (!migrated) continue;
         localStorage.setItem(`${PREVIOUS_SAVE_KEY}:backup:slot:${slot}`, raw);
+        const original = JSON.parse(raw) as { run?: { mode?: string } };
+        if (original.run?.mode === "survival") localStorage.setItem(`${LEGACY_SURVIVAL_KEY}:slot:${slot}`, raw);
         localStorage.setItem(`${SAVE_KEY}:slot:${slot}`, JSON.stringify(migrated));
       }
     } catch {
@@ -6787,6 +7743,7 @@ function makeWindWornMound(
     for (let slot = 0; slot < 3; slot += 1) {
       const envelope = this.envelopeForSlot(slot);
       const run = envelope?.run;
+      const hasLegacySurvival = Boolean(localStorage.getItem(`${LEGACY_SURVIVAL_KEY}:slot:${slot}`));
       const button = document.createElement("button");
       button.type = "button";
       button.className = `save-slot${slot === this.activeSlot ? " is-active" : ""}${run ? "" : " is-empty"}`;
@@ -6795,7 +7752,7 @@ function makeWindWornMound(
       const saved = run ? new Date(envelope!.savedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : "";
       const detail = run
         ? (isPreviewSave ? "旧测试存档保留，仅可导出或被新局覆盖" : `第 ${run.epoch} 夜 · ${regionById(run.regionId).name} · ${saved}`)
-        : "新局会保存到这里";
+        : hasLegacySurvival ? "旧版极限记录已封存；新版驻军守城将从新城开始" : "新局会保存到这里";
       button.innerHTML = `<i class="ph ${run ? "ph-floppy-disk" : "ph-plus-circle"}"></i><span><b>档位 ${slot + 1} · ${mode}</b><small>${detail}</small></span>`;
       button.title = run && !isPreviewSave ? `选择并继续：${detail}` : `选择档位 ${slot + 1}，新建世界将保存于此`;
       button.addEventListener("click", () => {
@@ -6809,11 +7766,12 @@ function makeWindWornMound(
 
   public exportSaves(): void {
     const slots = [0, 1, 2].map((slot) => this.envelopeForSlot(slot));
-    const blob = new Blob([JSON.stringify({ schema: "silk-road-bastion-export", version: 7, assetVersion: ASSET_VERSION, exportedAt: Date.now(), slots }, null, 2)], { type: "application/json" });
+    const legacySurvival = [0, 1, 2].map((slot) => localStorage.getItem(`${LEGACY_SURVIVAL_KEY}:slot:${slot}`));
+    const blob = new Blob([JSON.stringify({ schema: "silk-road-bastion-export", version: 8, assetVersion: ASSET_VERSION, exportedAt: Date.now(), slots, legacySurvival }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = "silk-road-bastion-v7-save.json";
+    link.download = "silk-road-bastion-v8-save.json";
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -6821,7 +7779,7 @@ function makeWindWornMound(
   public async importSaves(file: File): Promise<void> {
     try {
       const parsed = JSON.parse(await file.text()) as { schema?: string; version?: number; slots?: Array<SaveEnvelope | null> };
-      if (parsed.schema !== "silk-road-bastion-export" || ![6, 7].includes(parsed.version ?? -1) || !Array.isArray(parsed.slots)) throw new Error("格式不正确");
+      if (parsed.schema !== "silk-road-bastion-export" || ![6, 7, 8].includes(parsed.version ?? -1) || !Array.isArray(parsed.slots)) throw new Error("格式不正确");
       let imported = 0;
       parsed.slots.slice(0, 3).forEach((envelope, slot) => {
         const migrated = this.normalizeEnvelope(envelope);
@@ -6833,7 +7791,7 @@ function makeWindWornMound(
       this.refreshTitleUi();
       this.setPrompt("ph-check-circle", "存档已导入，可选择档位继续游戏");
     } catch {
-      this.setPrompt("ph-warning", "导入失败：请选择有效的丝路堡垒 v6 或 v7 存档");
+      this.setPrompt("ph-warning", "导入失败：请选择有效的丝路堡垒 v6、v7 或 v8 存档");
     }
   }
 
